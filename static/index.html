@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101112">
+    <meta name="description" content="LUMEN — archive photographique privée.">
+    <title>LUMEN · Archive photographique</title>
+    <link rel="stylesheet" href="/static/style.css?v=20261021-scrollfix">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Aller au contenu</a>
+
+    <div class="site-shell">
+      <section id="login-view" class="login-view" aria-labelledby="login-title">
+        <div class="login-orbit login-orbit--one" aria-hidden="true"></div>
+        <div class="login-orbit login-orbit--two" aria-hidden="true"></div>
+        <div class="login-panel">
+          <div class="brand-lockup" aria-label="LUMEN">
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 28 28" role="img" aria-hidden="true">
+                <path d="M4 4v20h20" fill="none" stroke="currentColor" stroke-width="1.5" />
+                <path d="M9 19V9m5 10V6m5 13v-7" fill="none" stroke="currentColor" stroke-width="1.5" />
+              </svg>
+            </span>
+            <span class="brand-name">LUMEN</span>
+          </div>
+          <p class="eyebrow">Archive photographique</p>
+          <h1 id="login-title">Votre regard,<br><em>au centre.</em></h1>
+          <p class="login-intro">Un espace calme pour retrouver, parcourir et transmettre vos images.</p>
+          <form id="login-form" class="login-form" novalidate>
+            <label for="login-password">Mot de passe</label>
+            <div class="password-field">
+              <input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="••••••••" autofocus>
+              <span class="field-glyph" aria-hidden="true">◌</span>
+            </div>
+            <p id="login-error" class="inline-message" role="alert" hidden></p>
+            <button id="login-submit" class="button button--primary button--wide" type="submit">
+              <span>Entrer dans l’archive</span>
+              <span class="button-arrow" aria-hidden="true">↗</span>
+            </button>
+          </form>
+          <p class="login-note">Accès privé · vos fichiers restent sur votre serveur</p>
+        </div>
+        <p class="login-footer">LUMEN <span>·</span> Un catalogue sans bruit</p>
+      </section>
+
+      <section id="app-view" class="app-view" aria-label="Archive LUMEN" hidden>
+        <header class="app-header">
+          <a class="brand-lockup brand-lockup--header" href="#main-content" aria-label="LUMEN — revenir au début">
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 28 28" role="img" aria-hidden="true">
+                <path d="M4 4v20h20" fill="none" stroke="currentColor" stroke-width="1.5" />
+                <path d="M9 19V9m5 10V6m5 13v-7" fill="none" stroke="currentColor" stroke-width="1.5" />
+              </svg>
+            </span>
+            <span class="brand-name">LUMEN</span>
+          </a>
+          <div class="header-actions">
+            <span id="session-status" class="session-status" aria-live="polite">connexion…</span>
+            <button id="scan-button" class="button button--ghost button--compact" type="button">
+              <span class="icon icon--refresh" aria-hidden="true">↻</span>
+              <span>Rescanner</span>
+            </button>
+            <button id="logout-button" class="button button--text button--compact" type="button">Sortir</button>
+          </div>
+        </header>
+
+        <main id="main-content" class="main-content" tabindex="-1">
+          <section class="archive-intro" aria-labelledby="archive-title">
+            <div>
+              <p class="eyebrow">Collection privée <span class="eyebrow-rule" aria-hidden="true"></span> LUMEN</p>
+              <h1 id="archive-title">Lumière, matière,<br><em>mémoire.</em></h1>
+            </div>
+            <p class="archive-intro__aside">Un contact-sheet vivant.<br>Chaque image à sa juste place.</p>
+          </section>
+
+          <section class="control-deck" aria-label="Outils de l’archive">
+            <div class="toolbar">
+              <label class="search-field" for="search-input">
+                <span class="search-icon" aria-hidden="true">⌕</span>
+                <span class="visually-hidden">Rechercher dans les noms</span>
+                <input id="search-input" type="search" autocomplete="off" placeholder="Rechercher une image…">
+                <kbd>/</kbd>
+              </label>
+              <label class="sort-field" for="sort-select">
+                <span class="visually-hidden">Trier les photos</span>
+                <select id="sort-select">
+                  <option value="date_desc">Plus récentes</option>
+                  <option value="date_asc">Plus anciennes</option>
+                  <option value="name_asc">Nom A → Z</option>
+                  <option value="iso_asc">ISO croissant</option>
+                  <option value="iso_desc">ISO décroissant</option>
+                  <option value="aperture_asc">Ouverture croissante</option>
+                  <option value="focal_asc">Focale croissante</option>
+                </select>
+              </label>
+              <label class="grid-size-control" for="grid-size">
+                <span class="grid-size-icon" aria-hidden="true">▦</span>
+                <span class="visually-hidden">Taille de la grille</span>
+                <input id="grid-size" type="range" min="150" max="320" step="10" value="220">
+                <output id="grid-size-value" for="grid-size">220px</output>
+              </label>
+              <details id="filter-details" class="filter-details">
+                <summary>
+                  <span class="filter-icon" aria-hidden="true">≡</span>
+                  <span>Affiner</span>
+                  <span id="filter-count" class="filter-count">aucun filtre</span>
+                  <span class="summary-chevron" aria-hidden="true">⌄</span>
+                </summary>
+                <form id="filters-form" class="filters-form">
+                  <label for="camera-filter">
+                    <span>Appareil</span>
+                    <select id="camera-filter">
+                      <option value="">Tous les appareils</option>
+                    </select>
+                  </label>
+                  <label for="lens-filter">
+                    <span>Objectif</span>
+                    <select id="lens-filter">
+                      <option value="">Tous les objectifs</option>
+                    </select>
+                  </label>
+                  <label for="format-filter">
+                    <span>Format</span>
+                    <select id="format-filter">
+                      <option value="">Tous les formats</option>
+                    </select>
+                  </label>
+                  <label for="date-from">
+                    <span>Du</span>
+                    <input id="date-from" type="date">
+                  </label>
+                  <label for="date-to">
+                    <span>Au</span>
+                    <input id="date-to" type="date">
+                  </label>
+                  <label for="iso-min">
+                    <span>ISO min.</span>
+                    <input id="iso-min" type="number" min="0" inputmode="numeric" placeholder="—">
+                  </label>
+                  <label for="iso-max">
+                    <span>ISO max.</span>
+                    <input id="iso-max" type="number" min="0" inputmode="numeric" placeholder="—">
+                  </label>
+                </form>
+              </details>
+            </div>
+            <p id="scan-status" class="inline-message scan-status" aria-live="polite" hidden>
+              <span class="status-pulse" aria-hidden="true"></span>
+              <span id="scan-status-text"></span>
+            </p>
+          </section>
+
+          <section class="upload-section" aria-labelledby="upload-title">
+            <div class="upload-heading">
+              <div>
+                <p class="eyebrow">Ajouter à l’archive</p>
+                <h2 id="upload-title">Importer de nouvelles vues</h2>
+              </div>
+              <span class="upload-rule" aria-hidden="true"></span>
+              <button id="upload-toggle" class="button button--outline button--compact upload-toggle" type="button" aria-expanded="false" aria-controls="upload-panel">
+                <span class="upload-toggle__label">Importer</span>
+                <span class="upload-toggle__icon" aria-hidden="true">＋</span>
+              </button>
+            </div>
+            <div id="upload-panel" class="upload-panel" hidden>
+              <form id="upload-form" class="upload-form">
+                <input id="upload-input" type="file" accept="image/*" multiple hidden>
+                <div id="upload-dropzone" class="upload-dropzone" role="group" aria-label="Zone d’import d’images" aria-describedby="upload-help">
+                  <span class="upload-symbol" aria-hidden="true">＋</span>
+                  <span class="upload-copy">
+                    <strong>Déposer vos images ici</strong>
+                    <span id="upload-help">ou choisir plusieurs fichiers depuis votre appareil</span>
+                  </span>
+                  <button id="upload-choose" class="button button--outline button--compact" type="button">Choisir</button>
+                </div>
+                <div class="upload-feedback">
+                  <p id="upload-summary" class="inline-message" aria-live="polite" hidden></p>
+                  <ul id="upload-errors" class="upload-errors" aria-live="polite" hidden></ul>
+                </div>
+                <button id="upload-submit" class="visually-hidden" type="submit">Importer</button>
+              </form>
+            </div>
+          </section>
+
+          <section class="gallery-section" aria-labelledby="gallery-title">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Feuille-contact</p>
+                <h2 id="gallery-title">Vos photographies</h2>
+              </div>
+              <div id="results-meta" class="results-meta">
+                <span id="result-count">—</span>
+                <span class="results-mark" aria-hidden="true">/</span>
+                <span>archive</span>
+              </div>
+            </div>
+            <div id="gallery-loading" class="gallery-state gallery-state--loading" role="status" hidden>
+              <span class="loader" aria-hidden="true"></span>
+              <p>Lecture de l’archive…</p>
+            </div>
+            <div id="gallery-empty" class="gallery-state gallery-state--empty" role="status" hidden>
+              <div class="empty-glyph" aria-hidden="true">∷</div>
+              <p class="eyebrow">Aucune image à afficher</p>
+              <h3>La lumière attend son entrée.</h3>
+              <p>Importez des photographies ci-dessus ou vérifiez que le dossier <code>PHOTO_ROOT</code> est configuré côté serveur.</p>
+            </div>
+            <div id="gallery-error" class="gallery-state gallery-state--error" role="alert" hidden>
+              <div class="empty-glyph" aria-hidden="true">!</div>
+              <p id="gallery-error-text">Les photos ne peuvent pas être chargées pour le moment.</p>
+              <button class="button button--outline button--compact" type="button" onclick="location.reload()">Réessayer</button>
+            </div>
+            <div id="gallery-grid" class="gallery-grid" aria-live="polite" aria-busy="true"></div>
+            <div class="load-more-wrap">
+              <button id="load-more" class="button button--outline" type="button" hidden>Charger la suite <span aria-hidden="true">↓</span></button>
+            </div>
+          </section>
+
+        </main>
+
+        <footer class="app-footer">
+          <span>LUMEN</span>
+          <span>Archive privée · sans bruit</span>
+          <span aria-hidden="true">—</span>
+        </footer>
+      </section>
+    </div>
+
+    <dialog id="lightbox" class="lightbox" aria-labelledby="lightbox-title" aria-modal="true">
+      <div class="lightbox-shell">
+        <header class="lightbox-header">
+          <div class="lightbox-heading">
+            <p class="eyebrow">Vue détaillée</p>
+            <h2 id="lightbox-title">Photo</h2>
+          </div>
+          <div class="lightbox-header-actions">
+            <span id="lightbox-position" class="lightbox-position">—</span>
+            <button id="lightbox-close" class="icon-button" type="button" aria-label="Fermer la vue détaillée">×</button>
+          </div>
+        </header>
+        <div class="lightbox-body">
+          <div id="lightbox-image-frame" class="lightbox-image-frame">
+            <button id="lightbox-previous" class="lightbox-nav lightbox-nav--previous" type="button" aria-label="Photo précédente">‹</button>
+            <div class="lightbox-media">
+              <span id="lightbox-image-loader" class="lightbox-loader loader" aria-hidden="true"></span>
+              <img id="lightbox-image" alt="" decoding="async">
+            </div>
+            <button id="lightbox-next" class="lightbox-nav lightbox-nav--next" type="button" aria-label="Photo suivante">›</button>
+          </div>
+          <aside class="lightbox-aside" aria-label="Informations de la photographie">
+            <div class="lightbox-aside-topline">
+              <p class="eyebrow">Métadonnées</p>
+              <a id="lightbox-download" class="button button--primary button--compact" href="#" download>Télécharger l’original <span aria-hidden="true">↓</span></a>
+            </div>
+            <p id="lightbox-loading" class="inline-message" aria-live="polite" hidden></p>
+            <p id="lightbox-error" class="inline-message" role="alert" hidden></p>
+            <dl id="lightbox-exif-list" class="exif-list"></dl>
+          </aside>
+        </div>
+      </div>
+    </dialog>
+
+    <noscript>
+      <div class="noscript-note">LUMEN a besoin de JavaScript pour afficher votre archive.</div>
+    </noscript>
+    <script src="/static/app.js?v=20261021-scrollfix"></script>
+  </body>
+</html>
