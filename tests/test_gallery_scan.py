@@ -320,6 +320,51 @@ def test_upload_is_indexed_when_configured_photo_root_is_distinct(tmp_path: Path
     assert client.get(listing["items"][0]["download_url"]).content == incoming_bytes
 
 
+def test_imported_only_matches_registered_photo_paths_without_phantom_uploads(tmp_path: Path):
+    source = tmp_path / "source"
+    source.mkdir()
+    make_jpeg(
+        source / "imported.jpg",
+        date="2026:06:07 08:09:10",
+        model="Imported Camera",
+        lens="Imported Lens",
+        iso=400,
+        focal=50,
+    )
+    make_jpeg(
+        source / "catalogued.jpg",
+        date="2025:01:02 03:04:05",
+        model="Catalogued Camera",
+        lens="Catalogued Lens",
+        iso=100,
+        focal=35,
+    )
+    client = make_client(tmp_path, source)
+    client.post("/api/scan")
+    wait_for_scan(client)
+
+    database = client.app.state.lumen_database
+    imported = database.get_photo_by_path(str((source / "imported.jpg").resolve()))
+    assert imported is not None
+    database.register_upload(imported["path"], "imported.jpg")
+    database.register_upload(str((tmp_path / "missing.jpg").resolve()), "missing.jpg")
+
+    response = client.get("/api/photos", params={"imported_only": "true"})
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert [item["name"] for item in response.json()["items"]] == ["imported.jpg"]
+    assert database.list_photos(imported_only=True)[1] == 1
+
+
+def test_imported_only_query_uses_fastapi_bool_validation(tmp_path: Path):
+    client = make_client(tmp_path)
+
+    response = client.get("/api/photos", params={"imported_only": "not-a-bool"})
+
+    assert response.status_code == 422
+
+
 def test_scan_reports_broken_photo_without_aborting(tmp_path: Path):
     source = tmp_path / "source"
     source.mkdir()

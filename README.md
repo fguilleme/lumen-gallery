@@ -7,7 +7,7 @@ Galerie responsive en français pour photographes : planche-contact, visionneuse
 - URL recommandée : https://arcturus.tail38ed6c.ts.net:9443 via Tailscale Serve (tailnet uniquement). La connexion et les miniatures ont été vérifiées via HTTPS dans Chromium mobile. Accès direct historique : http://100.90.227.52:8093.
 - Tailscale Serve 9443 relaie vers http://100.90.227.52:8093 ; les autres ports Serve restent inchangés. Uvicorn accepte les en-têtes proxy uniquement depuis 100.90.227.52 pour conserver schéma HTTPS, contrôle Origin et cookies Secure. Ne pas utiliser --no-proxy-headers derrière ce proxy.
 - Écoute limitée à l’adresse Tailscale, pas au LAN ni à Internet. HTTP est transporté dans le tunnel chiffré Tailscale.
-- Source en lecture seule : /home/francois/Salomé ; 3 882 photos découvertes (3 558 CR2, 324 JPEG). Les vidéos sont ignorées.
+- Source en lecture seule : /home/francois/Salomé ; 3 882 photos découvertes (3 558 CR2, 324 JPEG) au dernier index. Les vidéos `.mov`, `.mp4`, `.m4v` et `.webm` sont indexées à partir des métadonnées ffprobe ; les aperçus sont extraits à la demande.
 - Accès sans mot de passe applicatif : PHOTO_AUTH_REQUIRED=false. Tailscale constitue la frontière d’accès ; ne pas exposer cette instance sur Internet ou sur toutes les interfaces. Les protections Origin des actions restent actives. L’authentification reste activée par défaut si ce paramètre est absent.
 - Configuration : /home/francois/.config/lumen-gallery/gallery.env.
 - Service utilisateur : lumen-gallery.service, activé au démarrage de la session utilisateur. Linger est déjà actif sur cet hôte.
@@ -17,9 +17,11 @@ Galerie responsive en français pour photographes : planche-contact, visionneuse
 
 ## Features
 
-Filtres : recherche (nom/dossier/boîtier/objectif), boîtier, objectif, format, période de prise de vue, plage ISO. Tri : date croissante/décroissante, nom, ISO, ouverture et focale. Import optionnel depuis le navigateur ; les fichiers importés sont stockés dans data/uploads, jamais dans le dossier source.
+Filtres : recherche (nom/dossier/boîtier/objectif), type photo/vidéo, boîtier, objectif, format, période de prise de vue, plage ISO. Tri : date croissante/décroissante, nom, ISO, ouverture et focale. Import optionnel depuis le navigateur ; les fichiers importés sont stockés dans data/uploads, jamais dans le dossier source.
 
 RAW : extraction JpgFromRaw, puis PreviewImage ; les fichiers sans aperçu JPEG exploitable sont signalés comme erreurs de scan. Aucun dématriçage RAW. Miniatures limitées à 480 px et aperçus à 2048 px ; téléchargement = fichier original intégral.
+
+Vidéo : les métadonnées sont lues avec `ffprobe` sans décoder/indexer la vidéo entière. Les aperçus JPEG sont produits par `ffmpeg` sur une image située à `min(1 seconde, durée × 0,1)` et mis en cache par chemin, taille et mtime de la source. Les MP4 H.264/AAC sont servis directement ; les MOV H.264/PCM sont remuxés en MP4 avec copie vidéo et audio AAC. Les codecs vidéo incompatibles nécessitent un encodeur `libx264` disponible. Le flux `/api/photos/{id}/stream` accepte les requêtes HTTP Range.
 
 ## Requirements and setup
 
@@ -30,7 +32,7 @@ uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -r requirements.txt
 ```
 
-The repository vendors the official Phil Harvey ExifTool source (13.59, downloaded from `https://github.com/exiftool/exiftool`) under `vendor/exiftool/`. It is invoked as `perl vendor/exiftool/exiftool`; no system ExifTool installation or sudo is required.
+The repository vendors the official Phil Harvey ExifTool source (13.59, downloaded from `https://github.com/exiftool/exiftool`) under `vendor/exiftool/`. It is invoked as `perl vendor/exiftool/exiftool`; no system ExifTool installation or sudo is required. Video support additionally requires the `ffmpeg` and `ffprobe` executables on `PATH` (or explicit `PHOTO_FFMPEG`/`PHOTO_FFPROBE` paths).
 
 ## Configuration
 
@@ -44,6 +46,8 @@ The backend reads these environment variables:
 - `PHOTO_SESSION_SECRET`: optional independent cookie-signing secret. If absent, it is generated in `PHOTO_DATA_DIR/session-secret` with mode `0600`.
 - `PHOTO_ALLOWED_HOSTS`: optional comma-separated explicit host allow-list for state-changing requests. Loopback, private/local IPs, Tailscale `100.64.0.0/10`, `*.ts.net`, `localhost`, and `testserver` are accepted by default.
 - `PHOTO_MAX_UPLOAD_BYTES`: per-file upload limit; defaults to 250 MiB.
+- `PHOTO_FFMPEG`: optional path to the FFmpeg executable; defaults to `ffmpeg` on `PATH`.
+- `PHOTO_FFPROBE`: optional path to the FFprobe executable; defaults to `ffprobe` on `PATH`.
 
 For the deployment source supplied by the parent worker:
 
@@ -79,4 +83,4 @@ State-changing requests with an `Origin` header must match the request host orig
 .venv/bin/python -m pytest -q
 ```
 
-The test suite creates real EXIF JPEGs, exercises filtering/sorting/download/auth/upload/path containment/deletion, and scans the real rawpy Canon CR2 fixtures in `tests/fixtures/`. `RAW_CANON_40D_SRAW_V103.CR2` has SHA-256 `152382ce4dbf644899d12b41b4c577f07638aa3ec5745ac344c36bad93826125`; its embedded `PreviewImage` fallback is verified as a 1936x1288 JPEG. `M0054341_01_00005.cr2` has SHA-256 `add8183e643d98d5b07479d50bf5591838451d43449fd3399e2f146cf19beb8d` and verifies source EXIF orientation `3` is applied to the preview.
+The test suite creates real EXIF JPEGs and real FFmpeg-generated rotated MP4/MOV fixtures, exercises filtering/sorting/download/auth/upload/path containment/deletion/video Range streaming/source integrity, and scans the real rawpy Canon CR2 fixtures in `tests/fixtures/`. `RAW_CANON_40D_SRAW_V103.CR2` has SHA-256 `152382ce4dbf644899d12b41b4c577f07638aa3ec5745ac344c36bad93826125`; its embedded `PreviewImage` fallback is verified as a 1936x1288 JPEG. `M0054341_01_00005.cr2` has SHA-256 `add8183e643d98d5b07479d50bf5591838451d43449fd3399e2f146cf19beb8d` and verifies source EXIF orientation `3` is applied to the preview.

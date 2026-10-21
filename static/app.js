@@ -11,7 +11,11 @@
     'focal_asc',
   ]);
 
+  const MEDIA_TYPES = new Set(['photo', 'video']);
+
   const QUERY_FIELDS = [
+    ['mediaType', 'media_type'],
+    ['importedOnly', 'imported_only'],
     ['q', 'q'],
     ['camera', 'camera'],
     ['lens', 'lens'],
@@ -26,11 +30,40 @@
     return value !== undefined && value !== null && value !== '';
   }
 
+  function mediaTypeOf(item = {}) {
+    return item && item.media_type === 'video' ? 'video' : 'photo';
+  }
+
+  function hasMediaTypeContract(items) {
+    return Array.isArray(items)
+      && items.length > 0
+      && items.every((item) => item && MEDIA_TYPES.has(item.media_type));
+  }
+
+  function matchesMediaTypeFilter(items, requested) {
+    if (!requested) {
+      return true;
+    }
+    return hasMediaTypeContract(items)
+      && items.every((item) => item.media_type === requested);
+  }
+
   function buildPhotoQuery(filters = {}) {
     const pairs = [];
     for (const [source, target] of QUERY_FIELDS) {
-      const value = filters[source];
+      const value = source === 'mediaType'
+        ? (filters.mediaType ?? filters.media_type)
+        : filters[source];
+      if (target === 'imported_only') {
+        if (value === true) {
+          pairs.push('imported_only=true');
+        }
+        continue;
+      }
       if (!isPresent(value) || (typeof value === 'string' && value.trim() === '')) {
+        continue;
+      }
+      if (target === 'media_type' && !MEDIA_TYPES.has(String(value).trim())) {
         continue;
       }
       pairs.push(`${target}=${encodeURIComponent(String(value).trim())}`);
@@ -69,6 +102,33 @@
     }
     const digits = amount >= 100 ? 0 : amount >= 10 ? 1 : 1;
     return `${amount.toLocaleString('fr-FR', { maximumFractionDigits: digits })} ${units[unitIndex]}`;
+  }
+
+  function formatDuration(value) {
+    if (value === null || value === undefined || value === '') {
+      return '';
+    }
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds < 0) {
+      return '';
+    }
+    const wholeSeconds = Math.floor(seconds);
+    const hours = Math.floor(wholeSeconds / 3600);
+    const minutes = Math.floor((wholeSeconds % 3600) / 60);
+    const remainder = wholeSeconds % 60;
+    const paddedSeconds = String(remainder).padStart(2, '0');
+    if (hours > 0) {
+      return `${hours}:${String(minutes).padStart(2, '0')}:${paddedSeconds}`;
+    }
+    return `${minutes}:${paddedSeconds}`;
+  }
+
+  function formatUploadSelection(count) {
+    const number = Number(count);
+    if (!Number.isFinite(number) || number <= 0) {
+      return '';
+    }
+    return `${number} fichier${number === 1 ? '' : 's'} prêt${number === 1 ? '' : 's'} à importer`;
   }
 
   function getPhotoAspectRatio(photo = {}) {
@@ -153,6 +213,25 @@
         rows.push({ label, value: formatted });
       }
     };
+
+    if (mediaTypeOf(merged) === 'video') {
+      add('Prise de vue', firstExifValue([
+        merged.date,
+        exif.DateTimeOriginal,
+        exif.CreateDate,
+        exif.ModifyDate,
+      ]), formatCaptureDate);
+      add('Appareil', firstExifValue([merged.camera, exif.Model, exif.Make]));
+      const width = firstExifValue([merged.width, exif.ImageWidth, exif.ExifImageWidth]);
+      const height = firstExifValue([merged.height, exif.ImageHeight, exif.ExifImageHeight]);
+      if (isPresent(width) && isPresent(height)) {
+        add('Dimensions', `${width} × ${height} px`);
+      }
+      add('Durée', firstExifValue([merged.duration, exif.Duration, exif.DurationSeconds]), formatDuration);
+      add('Taille', firstExifValue([merged.size, exif.FileSize]), formatBytes);
+      add('Format', firstExifValue([merged.format, exif.FileType, exif.FileTypeExtension]));
+      return rows;
+    }
 
     add('Prise de vue', firstExifValue([
       merged.date,
@@ -241,8 +320,13 @@
   const helpers = {
     buildPhotoQuery,
     formatBytes,
+    formatDuration,
+    formatUploadSelection,
     getPhotoAspectRatio,
     formatExifValue,
+    hasMediaTypeContract,
+    matchesMediaTypeFilter,
+    mediaTypeOf,
     formatDate,
     sessionPresentation,
     buildExifRows,
@@ -262,6 +346,7 @@
     authenticated: false,
     sessionLabel: 'connecté',
     items: [],
+    mediaContract: null,
     total: null,
     offset: 0,
     hasMore: false,
@@ -274,7 +359,12 @@
     statusTimer: null,
     statusRunning: null,
     refreshAfterScan: false,
+    scanPending: false,
     searchTimer: null,
+    selectedFiles: [],
+    uploadInFlight: false,
+    uploadPending: null,
+    uploadErrorCount: 0,
     lightboxIndex: -1,
     lightboxRequest: null,
     lightboxSequence: 0,
@@ -296,6 +386,7 @@
     logoutButton: document.getElementById('logout-button'),
     scanStatus: document.getElementById('scan-status'),
     scanStatusText: document.getElementById('scan-status-text'),
+    scanButtonLabel: document.getElementById('scan-button-label'),
     uploadForm: document.getElementById('upload-form'),
     uploadInput: document.getElementById('upload-input'),
     uploadToggle: document.getElementById('upload-toggle'),
@@ -304,9 +395,12 @@
     uploadChoose: document.getElementById('upload-choose'),
     uploadSubmit: document.getElementById('upload-submit'),
     uploadSummary: document.getElementById('upload-summary'),
+    uploadSelection: document.getElementById('upload-selection'),
     uploadErrors: document.getElementById('upload-errors'),
     searchInput: document.getElementById('search-input'),
     sortSelect: document.getElementById('sort-select'),
+    mediaTypeSelect: document.getElementById('media-type-filter'),
+    importedOnlyFilter: document.getElementById('imported-only-filter'),
     gridSize: document.getElementById('grid-size'),
     gridSizeValue: document.getElementById('grid-size-value'),
     filtersForm: document.getElementById('filters-form'),
@@ -331,6 +425,7 @@
     lightboxTitle: document.getElementById('lightbox-title'),
     lightboxPosition: document.getElementById('lightbox-position'),
     lightboxImage: document.getElementById('lightbox-image'),
+    lightboxVideo: document.getElementById('lightbox-video'),
     lightboxImageLoader: document.getElementById('lightbox-image-loader'),
     lightboxImageFrame: document.getElementById('lightbox-image-frame'),
     lightboxDownload: document.getElementById('lightbox-download'),
@@ -474,13 +569,42 @@
       isoMin: dom.isoMin.value,
       isoMax: dom.isoMax.value,
       sort: dom.sortSelect.value,
+      mediaType: dom.mediaTypeSelect.value,
+      importedOnly: dom.importedOnlyFilter.checked,
       offset: state.offset,
       limit: PAGE_SIZE,
     };
   }
 
+  function clearFiltersForImportedOnly() {
+    dom.searchInput.value = '';
+    dom.mediaTypeSelect.value = '';
+    dom.cameraSelect.value = '';
+    dom.lensSelect.value = '';
+    dom.formatSelect.value = '';
+    dom.dateFrom.value = '';
+    dom.dateTo.value = '';
+    dom.isoMin.value = '';
+    dom.isoMax.value = '';
+  }
+
+  function selectImportedOnly() {
+    clearFiltersForImportedOnly();
+    dom.importedOnlyFilter.checked = true;
+    updateFilterCount();
+  }
+
+  function applyUrlFilters() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('imported_only') === 'true') {
+      selectImportedOnly();
+    }
+  }
+
   function updateFilterCount() {
     const values = [
+      dom.mediaTypeSelect.value,
+      dom.importedOnlyFilter.checked ? 'true' : '',
       dom.cameraSelect.value,
       dom.lensSelect.value,
       dom.formatSelect.value,
@@ -555,9 +679,9 @@
   function updateResultsMeta() {
     const loadedCount = state.items.length;
     if (state.total === null) {
-      dom.resultCount.textContent = loadedCount ? formatCount(loadedCount, 'photo') : '—';
+      dom.resultCount.textContent = loadedCount ? formatCount(loadedCount, 'média', 'médias') : '—';
     } else {
-      dom.resultCount.textContent = `${loadedCount} sur ${state.total} ${state.total === 1 ? 'photo' : 'photos'}`;
+      dom.resultCount.textContent = `${loadedCount} sur ${state.total} ${state.total === 1 ? 'média' : 'médias'}`;
     }
     dom.resultsMeta.classList.toggle('has-results', loadedCount > 0);
     const canLoadMore = state.total !== null
@@ -571,11 +695,15 @@
     const metadata = textElement('div', 'photo-card__metadata');
     const format = formatExifValue(photo.format).toUpperCase();
     const date = formatDate(photo.date, { short: true });
+    const duration = formatDuration(photo.duration);
     if (format !== '—') {
       metadata.append(textElement('span', 'metadata-label', format));
     }
     if (date !== '—') {
       metadata.append(textElement('span', '', date));
+    }
+    if (mediaTypeOf(photo) === 'video' && duration) {
+      metadata.append(textElement('span', 'photo-card__duration', duration));
     }
     parent.append(metadata);
   }
@@ -585,8 +713,8 @@
     const url = normaliseAssetUrl(photo.download_url);
     if (url) {
       link.href = url;
-      link.setAttribute('download', photo.name || 'photo');
-      link.setAttribute('aria-label', `Télécharger ${photo.name || 'la photo'}`);
+      link.setAttribute('download', photo.name || 'media');
+      link.setAttribute('aria-label', `Télécharger ${photo.name || 'le média'}`);
     } else {
       link.setAttribute('aria-disabled', 'true');
       link.tabIndex = -1;
@@ -596,13 +724,16 @@
   }
 
   function makePhotoCard(photo, index) {
-    const card = textElement('article', 'photo-card');
+    const mediaType = mediaTypeOf(photo);
+    const isVideo = mediaType === 'video';
+    const card = textElement('article', `photo-card${isVideo ? ' photo-card--video' : ''}`);
     card.dataset.photoId = photo.id === undefined || photo.id === null ? '' : String(photo.id);
+    card.dataset.mediaType = mediaType;
 
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'photo-card__open';
-    button.setAttribute('aria-label', `Ouvrir ${photo.name || 'la photo'}`);
+    button.setAttribute('aria-label', `Ouvrir ${photo.name || 'le média'}`);
     button.addEventListener('click', () => openLightbox(index));
 
     const frame = textElement('span', 'photo-card__frame');
@@ -613,7 +744,7 @@
     if (assetUrl) {
       const image = document.createElement('img');
       image.className = 'photo-card__image';
-      image.alt = photo.name || 'Photo';
+      image.alt = photo.name || (isVideo ? 'Vidéo' : 'Photo');
       image.loading = 'lazy';
       image.decoding = 'async';
       if (width && height) {
@@ -641,6 +772,10 @@
     } else {
       frame.classList.add('is-missing');
       frame.append(textElement('span', 'photo-card__missing', 'Aperçu indisponible'));
+    }
+
+    if (isVideo) {
+      frame.append(textElement('span', 'photo-card__play', '▶'));
     }
 
     const overlay = textElement('span', 'photo-card__overlay');
@@ -706,6 +841,21 @@
       }
       const incoming = Array.isArray(payload?.items) ? payload.items : [];
       const reportedTotal = finiteNumber(payload?.total);
+      const requestedMediaType = currentFilters().mediaType;
+      const mediaContractAvailable = hasMediaTypeContract(incoming);
+      const requestedTypeMatches = matchesMediaTypeFilter(incoming, requestedMediaType);
+      if (incoming.length > 0) {
+        state.mediaContract = mediaContractAvailable;
+      }
+      if (requestedMediaType && incoming.length > 0 && !requestedTypeMatches) {
+        state.items = [];
+        state.total = null;
+        state.offset = 0;
+        state.hasMore = false;
+        const label = requestedMediaType === 'video' ? 'Vidéos' : 'Photos';
+        renderGalleryError(`Le filtre ${label} nécessite la version média du serveur.`);
+        return;
+      }
       state.items = reset ? incoming : state.items.concat(incoming);
       state.total = reportedTotal === null ? null : reportedTotal;
       state.offset = state.items.length;
@@ -719,7 +869,7 @@
         state.items = [];
         state.total = null;
       }
-      renderGalleryError(displayErrorMessage(error, 'Les photos ne peuvent pas être chargées pour le moment.'));
+      renderGalleryError(displayErrorMessage(error, 'Les médias ne peuvent pas être chargés pour le moment.'));
     } finally {
       if (state.photosRequest === controller) {
         state.photosRequest = null;
@@ -790,14 +940,14 @@
     const processed = finiteNumber(payload?.processed);
     const total = finiteNumber(payload?.total);
     if (running) {
-      let message = 'Import en cours';
+      let message = 'Indexation en cours';
       if (processed !== null && total !== null) {
         message += ` · ${processed} / ${total}`;
       } else if (processed !== null) {
         message += ` · ${processed} traité${processed === 1 ? '' : 's'}`;
       }
       setMessage(dom.scanStatus, message, 'info');
-      dom.sessionStatus.textContent = 'import en cours';
+      dom.sessionStatus.textContent = 'indexation en cours';
       dom.sessionStatus.classList.remove('is-connected');
     } else {
       dom.sessionStatus.textContent = state.sessionLabel;
@@ -857,7 +1007,37 @@
         stopStatusPolling();
         if (wasRunning || state.refreshAfterScan) {
           state.refreshAfterScan = false;
+          const statusErrorCount = Array.isArray(payload?.errors)
+            ? payload.errors.length
+            : finiteNumber(payload?.errors) || 0;
+          if (state.uploadPending !== null && state.uploadPending > 0 && statusErrorCount === 0) {
+            selectImportedOnly();
+          }
           await refreshLibrary();
+          if (state.uploadPending !== null) {
+            const errorCount = Math.max(statusErrorCount, state.uploadErrorCount);
+            if (errorCount > 0) {
+              setMessage(
+                dom.uploadSummary,
+                `${state.uploadPending} fichier${state.uploadPending === 1 ? '' : 's'} indexé${state.uploadPending === 1 ? '' : 's'} avec ${errorCount} erreur${errorCount === 1 ? '' : 's'}.`,
+                'error',
+              );
+            } else {
+              setMessage(
+                dom.uploadSummary,
+                `${state.uploadPending} fichier${state.uploadPending === 1 ? '' : 's'} indexé${state.uploadPending === 1 ? '' : 's'}.`,
+                'success',
+              );
+            }
+            state.uploadPending = null;
+            state.uploadErrorCount = 0;
+          }
+          if (state.scanPending) {
+            if (statusErrorCount === 0) {
+              setMessage(dom.scanStatus, 'Rescan terminé.', 'success');
+            }
+            state.scanPending = false;
+          }
         }
       }
     } catch (error) {
@@ -883,16 +1063,26 @@
       return;
     }
     dom.scanButton.disabled = true;
+    dom.scanButton.setAttribute('aria-busy', 'true');
+    if (dom.scanButtonLabel) {
+      dom.scanButtonLabel.textContent = 'Rescan…';
+    }
+    state.scanPending = true;
     state.refreshAfterScan = true;
-    setMessage(dom.scanStatus, 'Préparation de l’import…', 'info');
+    setMessage(dom.scanStatus, 'Rescan en cours…', 'info');
     try {
       await fetchJson('/api/scan', { method: 'POST' });
       await refreshStatus();
     } catch (error) {
       state.refreshAfterScan = false;
+      state.scanPending = false;
       setMessage(dom.scanStatus, displayErrorMessage(error, 'Le scan n’a pas pu démarrer.'), 'error');
     } finally {
       dom.scanButton.disabled = false;
+      dom.scanButton.removeAttribute('aria-busy');
+      if (dom.scanButtonLabel) {
+        dom.scanButtonLabel.textContent = 'Rescanner';
+      }
     }
   }
 
@@ -910,6 +1100,30 @@
     setMessage(dom.uploadSummary, '');
     dom.uploadErrors.replaceChildren();
     setHidden(dom.uploadErrors, true);
+  }
+
+  function updateUploadSelection(files) {
+    state.selectedFiles = Array.from(files || []);
+    const label = formatUploadSelection(state.selectedFiles.length);
+    dom.uploadSelection.textContent = label;
+    setHidden(dom.uploadSelection, !label);
+    dom.uploadSubmit.disabled = !state.selectedFiles.length || state.uploadInFlight || state.uploadPending !== null;
+    dom.uploadSubmit.textContent = state.selectedFiles.length
+      ? `Importer (${state.selectedFiles.length})`
+      : 'Importer';
+  }
+
+  function handleUploadSelection(fileList) {
+    if (state.uploadInFlight || state.uploadPending !== null) {
+      setMessage(dom.uploadSummary, 'Indexation en cours. Vous pourrez importer d’autres fichiers ensuite.', 'info');
+      return;
+    }
+    const files = Array.from(fileList || []);
+    clearUploadMessages();
+    updateUploadSelection(files);
+    if (files.length) {
+      setMessage(dom.uploadSummary, 'Sélection prête. Cliquez sur Importer pour envoyer les fichiers.', 'info');
+    }
   }
 
   function errorValue(error) {
@@ -935,16 +1149,24 @@
     setHidden(dom.uploadErrors, false);
   }
 
-  async function uploadFiles(fileList) {
+  async function uploadFiles(fileList = state.selectedFiles) {
     const files = Array.from(fileList || []);
-    if (!files.length || dom.uploadSubmit.disabled) {
+    if (!files.length || state.uploadInFlight || state.uploadPending !== null) {
       return;
     }
     clearUploadMessages();
+    state.uploadInFlight = true;
     dom.uploadSubmit.disabled = true;
-    dom.uploadSubmit.textContent = 'Import…';
+    dom.uploadSubmit.setAttribute('aria-busy', 'true');
+    dom.uploadSubmit.textContent = 'Import en cours…';
+    setMessage(
+      dom.uploadSummary,
+      `${files.length} fichier${files.length === 1 ? '' : 's'} en cours d’envoi…`,
+      'info',
+    );
     const formData = new FormData();
     files.forEach((file) => formData.append('files', file, file.name));
+    let responseCompleted = false;
     try {
       const payload = await fetchJson('/api/upload', {
         method: 'POST',
@@ -953,18 +1175,34 @@
       const accepted = Array.isArray(payload?.accepted)
         ? payload.accepted.length
         : finiteNumber(payload?.accepted);
-      const acceptedLabel = accepted === null ? 'Import terminé.' : `${accepted} fichier${accepted === 1 ? '' : 's'} accepté${accepted === 1 ? '' : 's'}.`;
-      setMessage(dom.uploadSummary, acceptedLabel, accepted ? 'success' : 'info');
-      renderUploadErrors(payload?.errors);
+      const acceptedCount = accepted === null ? files.length : accepted;
+      state.uploadPending = acceptedCount;
+      state.uploadErrorCount = Array.isArray(payload?.errors)
+        ? payload.errors.length
+        : finiteNumber(payload?.errors) || 0;
       state.refreshAfterScan = true;
-      await refreshLibrary();
+      renderUploadErrors(payload?.errors);
+      setMessage(
+        dom.uploadSummary,
+        `${acceptedCount} fichier${acceptedCount === 1 ? '' : 's'} envoyé${acceptedCount === 1 ? '' : 's'}. Indexation en cours…`,
+        'info',
+      );
       await refreshStatus();
+      responseCompleted = true;
     } catch (error) {
+      state.refreshAfterScan = false;
+      state.uploadPending = null;
+      state.uploadErrorCount = 0;
       setMessage(dom.uploadSummary, displayErrorMessage(error, 'L’import n’a pas pu être envoyé.'), 'error');
     } finally {
-      dom.uploadSubmit.disabled = false;
-      dom.uploadSubmit.textContent = 'Importer';
-      dom.uploadInput.value = '';
+      state.uploadInFlight = false;
+      dom.uploadSubmit.removeAttribute('aria-busy');
+      if (responseCompleted) {
+        dom.uploadInput.value = '';
+        updateUploadSelection([]);
+      } else {
+        updateUploadSelection(state.selectedFiles);
+      }
       dom.uploadDropzone.classList.remove('is-dragging');
     }
   }
@@ -1004,30 +1242,86 @@
     });
   }
 
+  function resetLightboxImage() {
+    dom.lightboxImage.hidden = true;
+    dom.lightboxImage.removeAttribute('src');
+    dom.lightboxImage.removeAttribute('alt');
+    dom.lightboxImage.removeAttribute('width');
+    dom.lightboxImage.removeAttribute('height');
+  }
+
+  function resetLightboxVideo() {
+    if (!dom.lightboxVideo) {
+      return;
+    }
+    dom.lightboxVideo.pause();
+    dom.lightboxVideo.removeAttribute('src');
+    dom.lightboxVideo.removeAttribute('poster');
+    dom.lightboxVideo.removeAttribute('width');
+    dom.lightboxVideo.removeAttribute('height');
+    dom.lightboxVideo.hidden = true;
+    dom.lightboxVideo.load();
+  }
+
+  function resetLightboxMedia() {
+    resetLightboxImage();
+    resetLightboxVideo();
+    setHidden(dom.lightboxImageLoader, true);
+    dom.lightboxImageFrame.classList.remove('is-missing');
+    dom.lightboxImageFrame.classList.remove('is-video');
+  }
+
   function populateLightbox(photo, detail = null) {
     const title = formatExifValue(photo.name);
+    const isVideo = mediaTypeOf(photo) === 'video';
+    const width = finiteNumber(photo.width);
+    const height = finiteNumber(photo.height);
     dom.lightboxTitle.textContent = title;
     dom.lightboxPosition.textContent = `${state.lightboxIndex + 1} / ${state.items.length}`;
-    const assetUrl = normaliseAssetUrl(photo.preview_url || photo.thumb_url || photo.download_url);
-    dom.lightboxImage.hidden = !assetUrl;
-    setHidden(dom.lightboxImageLoader, !assetUrl);
-    dom.lightboxImageFrame.classList.toggle('is-missing', !assetUrl);
-    if (assetUrl) {
-      dom.lightboxImage.src = assetUrl;
-      dom.lightboxImage.alt = title;
-      const width = finiteNumber(photo.width);
-      const height = finiteNumber(photo.height);
-      if (width && height) {
-        dom.lightboxImage.width = width;
-        dom.lightboxImage.height = height;
+    resetLightboxMedia();
+    dom.lightboxImageFrame.classList.toggle('is-video', isVideo);
+
+    if (isVideo) {
+      const streamUrl = normaliseAssetUrl(photo.stream_url);
+      const posterUrl = normaliseAssetUrl(photo.preview_url || photo.thumb_url);
+      if (streamUrl) {
+        dom.lightboxVideo.hidden = false;
+        dom.lightboxVideo.controls = true;
+        dom.lightboxVideo.playsInline = true;
+        dom.lightboxVideo.preload = 'metadata';
+        dom.lightboxVideo.autoplay = false;
+        dom.lightboxVideo.setAttribute('aria-label', title);
+        if (posterUrl) {
+          dom.lightboxVideo.poster = posterUrl;
+        }
+        if (width && height) {
+          dom.lightboxVideo.width = width;
+          dom.lightboxVideo.height = height;
+        }
+        setHidden(dom.lightboxImageLoader, false);
+        dom.lightboxVideo.src = streamUrl;
+        dom.lightboxVideo.load();
       }
+      dom.lightboxImageFrame.classList.toggle('is-missing', !streamUrl);
     } else {
-      dom.lightboxImage.removeAttribute('src');
+      const assetUrl = normaliseAssetUrl(photo.preview_url || photo.thumb_url || photo.download_url);
+      if (assetUrl) {
+        dom.lightboxImage.hidden = false;
+        dom.lightboxImage.src = assetUrl;
+        dom.lightboxImage.alt = title;
+        if (width && height) {
+          dom.lightboxImage.width = width;
+          dom.lightboxImage.height = height;
+        }
+        setHidden(dom.lightboxImageLoader, false);
+      }
+      dom.lightboxImageFrame.classList.toggle('is-missing', !assetUrl);
     }
+
     const downloadUrl = normaliseAssetUrl(photo.download_url);
     if (downloadUrl) {
       dom.lightboxDownload.href = downloadUrl;
-      dom.lightboxDownload.setAttribute('download', photo.name || 'photo');
+      dom.lightboxDownload.setAttribute('download', photo.name || 'media');
       dom.lightboxDownload.removeAttribute('aria-disabled');
       dom.lightboxDownload.classList.remove('is-disabled');
     } else {
@@ -1102,6 +1396,7 @@
 
   function closeLightbox() {
     if (!dom.lightbox.open && !dom.lightbox.hasAttribute('open')) {
+      resetLightboxMedia();
       return;
     }
     if (state.lightboxRequest) {
@@ -1109,6 +1404,7 @@
       state.lightboxRequest = null;
     }
     state.lightboxSequence += 1;
+    resetLightboxMedia();
     if (typeof dom.lightbox.close === 'function' && dom.lightbox.open) {
       dom.lightbox.close();
     } else {
@@ -1125,6 +1421,11 @@
     if (event.key === 'Escape') {
       event.preventDefault();
       closeLightbox();
+      return;
+    }
+    const videoHasFocus = dom.lightboxVideo
+      && (event.target === dom.lightboxVideo || dom.lightboxVideo.contains(event.target));
+    if (videoHasFocus && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
       return;
     }
     if (event.key === 'ArrowLeft') {
@@ -1157,11 +1458,19 @@
   }
 
   function onLightboxPointerDown(event) {
+    if (event.isPrimary === false || event.target === dom.lightboxVideo || event.target?.closest?.('video,button,a,input,select,textarea')) {
+      state.swipeStartX = null;
+      return;
+    }
     state.swipeStartX = event.clientX;
   }
 
   function onLightboxPointerUp(event) {
     if (state.swipeStartX === null) {
+      return;
+    }
+    if (event.target === dom.lightboxVideo || event.target?.closest?.('video,button,a,input,select,textarea')) {
+      state.swipeStartX = null;
       return;
     }
     const distance = event.clientX - state.swipeStartX;
@@ -1170,6 +1479,23 @@
       return;
     }
     navigateLightbox(distance < 0 ? 1 : -1);
+  }
+
+  function onLightboxMediaLoaded(event) {
+    if (event.currentTarget.hidden) {
+      return;
+    }
+    setHidden(dom.lightboxImageLoader, true);
+    dom.lightboxImageFrame.classList.remove('is-missing');
+  }
+
+  function onLightboxMediaError(event) {
+    if (event.currentTarget.hidden) {
+      return;
+    }
+    setHidden(dom.lightboxImageLoader, true);
+    event.currentTarget.hidden = true;
+    dom.lightboxImageFrame.classList.add('is-missing');
   }
 
   async function submitLogin(event) {
@@ -1210,7 +1536,10 @@
     }
   }
 
-  function onFilterChanged() {
+  function onFilterChanged(event) {
+    if (event?.target === dom.importedOnlyFilter && dom.importedOnlyFilter.checked) {
+      clearFiltersForImportedOnly();
+    }
     updateFilterCount();
     void loadPhotos({ reset: true });
   }
@@ -1238,6 +1567,8 @@
 
     dom.searchInput.addEventListener('input', scheduleSearch);
     dom.sortSelect.addEventListener('change', onFilterChanged);
+    dom.mediaTypeSelect.addEventListener('change', onFilterChanged);
+    dom.importedOnlyFilter.addEventListener('change', onFilterChanged);
     dom.filtersForm.addEventListener('change', onFilterChanged);
     dom.gridSize.addEventListener('input', updateGridSize);
     dom.loadMore.addEventListener('click', () => loadPhotos({ reset: false }));
@@ -1258,10 +1589,10 @@
         dom.uploadInput.click();
       }
     });
-    dom.uploadInput.addEventListener('change', () => uploadFiles(dom.uploadInput.files));
+    dom.uploadInput.addEventListener('change', () => handleUploadSelection(dom.uploadInput.files));
     dom.uploadForm.addEventListener('submit', (event) => {
       event.preventDefault();
-      uploadFiles(dom.uploadInput.files);
+      void uploadFiles();
     });
     ['dragenter', 'dragover'].forEach((eventName) => {
       dom.uploadDropzone.addEventListener(eventName, (event) => {
@@ -1275,20 +1606,17 @@
         dom.uploadDropzone.classList.remove('is-dragging');
       });
     });
-    dom.uploadDropzone.addEventListener('drop', (event) => uploadFiles(event.dataTransfer.files));
+    dom.uploadDropzone.addEventListener('drop', (event) => handleUploadSelection(event.dataTransfer.files));
 
     dom.lightbox.addEventListener('keydown', onLightboxKeydown);
     dom.lightboxClose.addEventListener('click', closeLightbox);
     dom.lightboxPrevious.addEventListener('click', () => navigateLightbox(-1));
     dom.lightboxNext.addEventListener('click', () => navigateLightbox(1));
-    dom.lightboxImage.addEventListener('load', () => {
-      setHidden(dom.lightboxImageLoader, true);
-    });
-    dom.lightboxImage.addEventListener('error', () => {
-      setHidden(dom.lightboxImageLoader, true);
-      dom.lightboxImage.hidden = true;
-      dom.lightboxImageFrame.classList.add('is-missing');
-    });
+    dom.lightboxImage.addEventListener('load', onLightboxMediaLoaded);
+    dom.lightboxImage.addEventListener('error', onLightboxMediaError);
+    dom.lightboxVideo.addEventListener('loadedmetadata', onLightboxMediaLoaded);
+    dom.lightboxVideo.addEventListener('canplay', onLightboxMediaLoaded);
+    dom.lightboxVideo.addEventListener('error', onLightboxMediaError);
     dom.lightboxImageFrame.addEventListener('pointerdown', onLightboxPointerDown);
     dom.lightboxImageFrame.addEventListener('pointerup', onLightboxPointerUp);
     dom.lightbox.addEventListener('cancel', (event) => {
@@ -1296,12 +1624,14 @@
       closeLightbox();
     });
     dom.lightbox.addEventListener('close', () => {
+      resetLightboxMedia();
       document.body.classList.remove('modal-open');
     });
   }
 
   async function bootstrap() {
     bindEvents();
+    applyUrlFilters();
     updateGridSize();
     updateFilterCount();
     try {

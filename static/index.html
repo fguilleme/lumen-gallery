@@ -4,9 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#101112">
-    <meta name="description" content="LUMEN — archive photographique privée.">
-    <title>LUMEN · Archive photographique</title>
-    <link rel="stylesheet" href="/static/style.css?v=20261021-scrollfix">
+    <meta name="description" content="LUMEN — archive de médias privée.">
+    <title>LUMEN · Archive de médias</title>
+    <link rel="stylesheet" href="/static/style.css?v=20261021-import2">
   </head>
   <body>
     <a class="skip-link" href="#main-content">Aller au contenu</a>
@@ -25,9 +25,9 @@
             </span>
             <span class="brand-name">LUMEN</span>
           </div>
-          <p class="eyebrow">Archive photographique</p>
+          <p class="eyebrow">Archive de médias</p>
           <h1 id="login-title">Votre regard,<br><em>au centre.</em></h1>
-          <p class="login-intro">Un espace calme pour retrouver, parcourir et transmettre vos images.</p>
+          <p class="login-intro">Un espace calme pour retrouver, parcourir et transmettre vos médias.</p>
           <form id="login-form" class="login-form" novalidate>
             <label for="login-password">Mot de passe</label>
             <div class="password-field">
@@ -60,7 +60,7 @@
             <span id="session-status" class="session-status" aria-live="polite">connexion…</span>
             <button id="scan-button" class="button button--ghost button--compact" type="button">
               <span class="icon icon--refresh" aria-hidden="true">↻</span>
-              <span>Rescanner</span>
+              <span id="scan-button-label">Rescanner</span>
             </button>
             <button id="logout-button" class="button button--text button--compact" type="button">Sortir</button>
           </div>
@@ -72,19 +72,19 @@
               <p class="eyebrow">Collection privée <span class="eyebrow-rule" aria-hidden="true"></span> LUMEN</p>
               <h1 id="archive-title">Lumière, matière,<br><em>mémoire.</em></h1>
             </div>
-            <p class="archive-intro__aside">Un contact-sheet vivant.<br>Chaque image à sa juste place.</p>
+            <p class="archive-intro__aside">Un contact-sheet vivant.<br>Chaque média à sa juste place.</p>
           </section>
 
           <section class="control-deck" aria-label="Outils de l’archive">
             <div class="toolbar">
               <label class="search-field" for="search-input">
                 <span class="search-icon" aria-hidden="true">⌕</span>
-                <span class="visually-hidden">Rechercher dans les noms</span>
-                <input id="search-input" type="search" autocomplete="off" placeholder="Rechercher une image…">
+                <span class="visually-hidden">Rechercher dans les noms de médias</span>
+                <input id="search-input" type="search" autocomplete="off" placeholder="Rechercher un média…">
                 <kbd>/</kbd>
               </label>
               <label class="sort-field" for="sort-select">
-                <span class="visually-hidden">Trier les photos</span>
+                <span class="visually-hidden">Trier les médias</span>
                 <select id="sort-select">
                   <option value="date_desc">Plus récentes</option>
                   <option value="date_asc">Plus anciennes</option>
@@ -94,6 +94,18 @@
                   <option value="aperture_asc">Ouverture croissante</option>
                   <option value="focal_asc">Focale croissante</option>
                 </select>
+              </label>
+              <label class="media-type-field sort-field" for="media-type-filter">
+                <span class="media-type-label">Type</span>
+                <select id="media-type-filter" aria-label="Type de média">
+                  <option value="">Tous</option>
+                  <option value="photo">Photos</option>
+                  <option value="video">Vidéos</option>
+                </select>
+              </label>
+              <label class="media-type-field imported-only-field" for="imported-only-filter">
+                <input id="imported-only-filter" type="checkbox">
+                <span class="media-type-label">Importés</span>
               </label>
               <label class="grid-size-control" for="grid-size">
                 <span class="grid-size-icon" aria-hidden="true">▦</span>
@@ -166,20 +178,21 @@
             </div>
             <div id="upload-panel" class="upload-panel" hidden>
               <form id="upload-form" class="upload-form">
-                <input id="upload-input" type="file" accept="image/*" multiple hidden>
-                <div id="upload-dropzone" class="upload-dropzone" role="group" aria-label="Zone d’import d’images" aria-describedby="upload-help">
+                <input id="upload-input" type="file" accept="image/*,video/mp4,video/quicktime,.mp4,.mov" multiple hidden>
+                <div id="upload-dropzone" class="upload-dropzone" role="group" tabindex="0" aria-label="Zone d’import de photos et vidéos" aria-describedby="upload-help">
                   <span class="upload-symbol" aria-hidden="true">＋</span>
                   <span class="upload-copy">
-                    <strong>Déposer vos images ici</strong>
-                    <span id="upload-help">ou choisir plusieurs fichiers depuis votre appareil</span>
+                    <strong>Déposer vos photos ou vidéos ici</strong>
+                    <span id="upload-help">ou choisir plusieurs fichiers depuis votre appareil · JPG, PNG, MP4 ou MOV</span>
                   </span>
                   <button id="upload-choose" class="button button--outline button--compact" type="button">Choisir</button>
                 </div>
                 <div class="upload-feedback">
+                  <p id="upload-selection" class="upload-selection" aria-live="polite" hidden></p>
                   <p id="upload-summary" class="inline-message" aria-live="polite" hidden></p>
                   <ul id="upload-errors" class="upload-errors" aria-live="polite" hidden></ul>
                 </div>
-                <button id="upload-submit" class="visually-hidden" type="submit">Importer</button>
+                <button id="upload-submit" class="button button--primary upload-submit" type="submit" disabled>Importer</button>
               </form>
             </div>
           </section>
@@ -188,7 +201,7 @@
             <div class="section-heading">
               <div>
                 <p class="eyebrow">Feuille-contact</p>
-                <h2 id="gallery-title">Vos photographies</h2>
+                <h2 id="gallery-title">Vos médias</h2>
               </div>
               <div id="results-meta" class="results-meta">
                 <span id="result-count">—</span>
@@ -202,13 +215,13 @@
             </div>
             <div id="gallery-empty" class="gallery-state gallery-state--empty" role="status" hidden>
               <div class="empty-glyph" aria-hidden="true">∷</div>
-              <p class="eyebrow">Aucune image à afficher</p>
+              <p class="eyebrow">Aucun média à afficher</p>
               <h3>La lumière attend son entrée.</h3>
-              <p>Importez des photographies ci-dessus ou vérifiez que le dossier <code>PHOTO_ROOT</code> est configuré côté serveur.</p>
+              <p>Importez des photos ou vidéos ci-dessus ou vérifiez que le dossier <code>PHOTO_ROOT</code> est configuré côté serveur.</p>
             </div>
             <div id="gallery-error" class="gallery-state gallery-state--error" role="alert" hidden>
               <div class="empty-glyph" aria-hidden="true">!</div>
-              <p id="gallery-error-text">Les photos ne peuvent pas être chargées pour le moment.</p>
+              <p id="gallery-error-text">Les médias ne peuvent pas être chargés pour le moment.</p>
               <button class="button button--outline button--compact" type="button" onclick="location.reload()">Réessayer</button>
             </div>
             <div id="gallery-grid" class="gallery-grid" aria-live="polite" aria-busy="true"></div>
@@ -232,7 +245,7 @@
         <header class="lightbox-header">
           <div class="lightbox-heading">
             <p class="eyebrow">Vue détaillée</p>
-            <h2 id="lightbox-title">Photo</h2>
+            <h2 id="lightbox-title">Média</h2>
           </div>
           <div class="lightbox-header-actions">
             <span id="lightbox-position" class="lightbox-position">—</span>
@@ -241,14 +254,15 @@
         </header>
         <div class="lightbox-body">
           <div id="lightbox-image-frame" class="lightbox-image-frame">
-            <button id="lightbox-previous" class="lightbox-nav lightbox-nav--previous" type="button" aria-label="Photo précédente">‹</button>
+            <button id="lightbox-previous" class="lightbox-nav lightbox-nav--previous" type="button" aria-label="Média précédent">‹</button>
             <div class="lightbox-media">
               <span id="lightbox-image-loader" class="lightbox-loader loader" aria-hidden="true"></span>
               <img id="lightbox-image" alt="" decoding="async">
+              <video id="lightbox-video" controls playsinline preload="metadata" hidden></video>
             </div>
-            <button id="lightbox-next" class="lightbox-nav lightbox-nav--next" type="button" aria-label="Photo suivante">›</button>
+            <button id="lightbox-next" class="lightbox-nav lightbox-nav--next" type="button" aria-label="Média suivant">›</button>
           </div>
-          <aside class="lightbox-aside" aria-label="Informations de la photographie">
+          <aside class="lightbox-aside" aria-label="Informations du média">
             <div class="lightbox-aside-topline">
               <p class="eyebrow">Métadonnées</p>
               <a id="lightbox-download" class="button button--primary button--compact" href="#" download>Télécharger l’original <span aria-hidden="true">↓</span></a>
@@ -264,6 +278,6 @@
     <noscript>
       <div class="noscript-note">LUMEN a besoin de JavaScript pour afficher votre archive.</div>
     </noscript>
-    <script src="/static/app.js?v=20261021-scrollfix"></script>
+    <script src="/static/app.js?v=20261021-import2"></script>
   </body>
 </html>

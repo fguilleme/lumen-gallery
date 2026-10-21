@@ -93,6 +93,7 @@ def test_all_photo_and_scan_apis_require_session(tmp_path):
     assert client.get("/api/photos/1").status_code == 401
     assert client.get("/api/photos/1/thumb").status_code == 401
     assert client.get("/api/photos/1/preview").status_code == 401
+    assert client.get("/api/photos/1/stream").status_code == 401
     assert client.get("/api/photos/1/download").status_code == 401
 
 

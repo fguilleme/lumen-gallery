@@ -54,6 +54,8 @@ class Settings:
     perl_path: str | None = None
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
     auth_required: bool = True
+    ffmpeg_path: str | None = None
+    ffprobe_path: str | None = None
 
     def __post_init__(self) -> None:
         self.project_dir = _resolve_path(self.project_dir, Path.cwd(), Path.cwd())
@@ -68,6 +70,8 @@ class Settings:
             self.project_dir,
         )
         self.perl_path = self.perl_path or shutil.which("perl") or "perl"
+        self.ffmpeg_path = self.ffmpeg_path or shutil.which("ffmpeg") or "ffmpeg"
+        self.ffprobe_path = self.ffprobe_path or shutil.which("ffprobe") or "ffprobe"
         self.max_upload_bytes = int(self.max_upload_bytes)
         if self.max_upload_bytes <= 0:
             raise ValueError("max_upload_bytes must be positive")
@@ -106,6 +110,8 @@ class Settings:
             cache_dir=env_path("PHOTO_CACHE_DIR", data_dir / "cache"),
             access_password=os.environ.get("PHOTO_PASSWORD") or None,
             session_secret=os.environ.get("PHOTO_SESSION_SECRET") or None,
+            ffmpeg_path=os.environ.get("PHOTO_FFMPEG") or None,
+            ffprobe_path=os.environ.get("PHOTO_FFPROBE") or None,
             auth_required=(
                 os.environ.get("PHOTO_AUTH_REQUIRED", "").strip().lower() not in AUTH_DISABLED_VALUES
             ),

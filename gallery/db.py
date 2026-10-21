@@ -52,7 +52,9 @@ class Database:
                     height INTEGER,
                     size INTEGER NOT NULL,
                     mtime_ns INTEGER NOT NULL,
-                    exif_json TEXT NOT NULL DEFAULT '{}'
+                    exif_json TEXT NOT NULL DEFAULT '{}',
+                    media_type TEXT NOT NULL DEFAULT 'photo',
+                    duration REAL
                 );
                 CREATE INDEX IF NOT EXISTS idx_photos_date ON photos(date);
                 CREATE INDEX IF NOT EXISTS idx_photos_camera ON photos(camera);
@@ -64,6 +66,16 @@ class Database:
                 );
                 """
             )
+            columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(photos)").fetchall()
+            }
+            if "media_type" not in columns:
+                connection.execute(
+                    "ALTER TABLE photos ADD COLUMN media_type TEXT NOT NULL DEFAULT 'photo'"
+                )
+            if "duration" not in columns:
+                connection.execute("ALTER TABLE photos ADD COLUMN duration REAL")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_photos_media_type ON photos(media_type)")
 
     @staticmethod
     def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -113,14 +125,17 @@ class Database:
             photo["size"],
             photo["mtime_ns"],
             json.dumps(photo["exif"], ensure_ascii=False, separators=(",", ":")),
+            photo.get("media_type", "photo"),
+            photo.get("duration"),
         )
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO photos(
                     path, root_path, relative_path, name, format, date, camera, lens,
-                    iso, aperture, shutter, focal, width, height, size, mtime_ns, exif_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    iso, aperture, shutter, focal, width, height, size, mtime_ns, exif_json,
+                    media_type, duration
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
                     root_path = excluded.root_path,
                     relative_path = excluded.relative_path,
@@ -137,7 +152,9 @@ class Database:
                     height = excluded.height,
                     size = excluded.size,
                     mtime_ns = excluded.mtime_ns,
-                    exif_json = excluded.exif_json
+                    exif_json = excluded.exif_json,
+                    media_type = excluded.media_type,
+                    duration = excluded.duration
                 """,
                 fields,
             )
@@ -167,6 +184,8 @@ class Database:
         camera: str | None = None,
         lens: str | None = None,
         format: str | None = None,
+        media_type: str | None = None,
+        imported_only: bool = False,
         date_from: str | None = None,
         date_to: str | None = None,
         iso_min: float | None = None,
@@ -189,6 +208,13 @@ class Database:
         if format:
             clauses.append("format = ?")
             params.append(format.upper())
+        if media_type:
+            clauses.append("media_type = ?")
+            params.append(media_type)
+        if imported_only:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM upload_names WHERE upload_names.stored_path = photos.path)"
+            )
         if date_from:
             clauses.append("substr(date, 1, 10) >= ?")
             params.append(date_from[:10])
@@ -210,6 +236,8 @@ class Database:
         camera: str | None = None,
         lens: str | None = None,
         format: str | None = None,
+        media_type: str | None = None,
+        imported_only: bool = False,
         date_from: str | None = None,
         date_to: str | None = None,
         iso_min: float | None = None,
@@ -223,6 +251,8 @@ class Database:
             camera=camera,
             lens=lens,
             format=format,
+            media_type=media_type,
+            imported_only=imported_only,
             date_from=date_from,
             date_to=date_to,
             iso_min=iso_min,

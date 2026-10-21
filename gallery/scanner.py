@@ -8,7 +8,8 @@ from typing import Callable, Iterator
 
 from .config import Settings
 from .db import Database
-from .exif import SUPPORTED_EXTENSIONS, ExifTool, inspect_file
+from .exif import SUPPORTED_EXTENSIONS, VIDEO_EXTENSIONS, ExifTool, inspect_file
+from .video import inspect_video
 
 
 DEFAULT_SCAN_WORKERS = 4
@@ -85,7 +86,15 @@ class PhotoScanner:
             if existing and int(existing["size"]) == stat.st_size and int(existing["mtime_ns"]) == stat.st_mtime_ns:
                 return None
             display_name = self.database.original_name_for(key) or path.name
-            inspected = inspect_file(path, self.exiftool, name=display_name)
+            if path.suffix.lower() in VIDEO_EXTENSIONS:
+                inspected = inspect_video(
+                    path,
+                    self.exiftool,
+                    ffprobe_path=self.settings.ffprobe_path or "ffprobe",
+                    name=display_name,
+                )
+            else:
+                inspected = inspect_file(path, self.exiftool, name=display_name)
             inspected.update(
                 {
                     "path": key,
@@ -147,6 +156,7 @@ class ScanManager:
         self.database = database
         self.exiftool = exiftool
         self._lock = threading.RLock()
+        self._rescan_requested = False
         self._status: dict[str, object] = {
             "running": False,
             "total": 0,
@@ -170,19 +180,26 @@ class ScanManager:
             errors.append(message)
 
     def _run(self) -> None:
-        progress = ScanProgress(self._set_total, self._processed, self._error)
-        try:
-            PhotoScanner(self.settings, self.database, self.exiftool, progress).scan()
-        except Exception as exc:  # status remains observable if a scan-wide failure occurs
-            self._error(str(exc).strip() or exc.__class__.__name__)
-        finally:
+        while True:
+            progress = ScanProgress(self._set_total, self._processed, self._error)
+            try:
+                PhotoScanner(self.settings, self.database, self.exiftool, progress).scan()
+            except Exception as exc:  # status remains observable if a scan-wide failure occurs
+                self._error(str(exc).strip() or exc.__class__.__name__)
             with self._lock:
+                if self._rescan_requested:
+                    self._rescan_requested = False
+                    self._status.update({"total": 0, "processed": 0, "errors": []})
+                    continue
                 self._status["running"] = False
+                return
 
     def start(self) -> bool:
         with self._lock:
             if bool(self._status["running"]):
+                self._rescan_requested = True
                 return True
+            self._rescan_requested = False
             self._status.update({"running": True, "total": 0, "processed": 0, "errors": []})
             thread = threading.Thread(target=self._run, name="lumen-gallery-scan", daemon=True)
             thread.start()

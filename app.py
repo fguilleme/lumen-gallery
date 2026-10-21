@@ -9,18 +9,18 @@ import os
 import secrets
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from gallery.config import Settings
 from gallery.db import SORT_SQL, Database
 from gallery.exif import SUPPORTED_EXTENSIONS, ExifTool
-from gallery.media import MediaCache, MediaNotFound, resolve_photo_path
+from gallery.media import MediaCache, MediaConversionError, MediaNotFound, resolve_photo_path
 from gallery.scanner import ScanManager
 
 
@@ -116,10 +116,13 @@ def _public_number(value: Any) -> Any:
 
 def _item(row: dict[str, Any]) -> dict[str, Any]:
     photo_id = int(row["id"])
+    media_type = str(row.get("media_type") or "photo")
     return {
         "id": photo_id,
         "name": str(row["name"]),
         "format": str(row["format"]),
+        "media_type": media_type,
+        "duration": row.get("duration"),
         "date": str(row["date"]),
         "camera": str(row["camera"]),
         "lens": str(row["lens"]),
@@ -133,6 +136,7 @@ def _item(row: dict[str, Any]) -> dict[str, Any]:
         "thumb_url": f"/api/photos/{photo_id}/thumb",
         "preview_url": f"/api/photos/{photo_id}/preview",
         "download_url": f"/api/photos/{photo_id}/download",
+        "stream_url": f"/api/photos/{photo_id}/stream" if media_type == "video" else None,
     }
 
 
@@ -140,6 +144,64 @@ def _safe_original_name(filename: str | None) -> str:
     candidate = Path(filename or "").name
     cleaned = "".join(char if char.isprintable() and char not in {"\x00", "\r", "\n"} else "_" for char in candidate)
     return cleaned or "upload"
+
+
+def _file_range_response(request: Request, path: Path, media_type: str) -> Response:
+    size = path.stat().st_size
+    range_header = request.headers.get("range")
+    if not range_header:
+        return FileResponse(path, media_type=media_type, headers={"Accept-Ranges": "bytes"})
+    if not range_header.startswith("bytes=") or "," in range_header:
+        raise HTTPException(
+            status_code=416,
+            detail="Invalid byte range",
+            headers={"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"},
+        )
+    value = range_header[6:].strip()
+    try:
+        start_text, end_text = value.split("-", 1)
+        if not start_text:
+            suffix_length = int(end_text)
+            if suffix_length <= 0:
+                raise ValueError
+            start = max(size - suffix_length, 0)
+            end = size - 1
+        else:
+            start = int(start_text)
+            end = int(end_text) if end_text else size - 1
+            if start < 0 or start >= size or end < start:
+                raise ValueError
+            end = min(end, size - 1)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=416,
+            detail="Invalid byte range",
+            headers={"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"},
+        )
+
+    length = end - start + 1
+
+    def content():
+        with path.open("rb") as handle:
+            handle.seek(start)
+            remaining = length
+            while remaining:
+                chunk = handle.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return StreamingResponse(
+        content(),
+        status_code=206,
+        media_type=media_type,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(length),
+            "Content-Range": f"bytes {start}-{end}/{size}",
+        },
+    )
 
 
 async def _write_upload(path: Path, upload: UploadFile, max_bytes: int) -> int:
@@ -266,6 +328,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         camera: str | None = None,
         lens: str | None = None,
         format: str | None = None,
+        media_type: Literal["photo", "video"] | None = Query(None),
+        imported_only: bool = Query(False),
         date_from: str | None = None,
         date_to: str | None = None,
         iso_min: float | None = None,
@@ -282,6 +346,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             camera=camera,
             lens=lens,
             format=format,
+            media_type=media_type,
+            imported_only=imported_only,
             date_from=date_from,
             date_to=date_to,
             iso_min=iso_min,
@@ -318,6 +384,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         row = get_photo(photo_id)
         try:
             path = media.jpeg("thumb", row)
+        except MediaConversionError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except (MediaNotFound, OSError, ValueError) as exc:
             raise HTTPException(status_code=404, detail="Thumbnail unavailable") from exc
         return FileResponse(path, media_type="image/jpeg")
@@ -327,9 +395,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         row = get_photo(photo_id)
         try:
             path = media.jpeg("preview", row)
+        except MediaConversionError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except (MediaNotFound, OSError, ValueError) as exc:
             raise HTTPException(status_code=404, detail="Preview unavailable") from exc
         return FileResponse(path, media_type="image/jpeg")
+
+    @app.get("/api/photos/{photo_id}/stream")
+    def stream(photo_id: int, request: Request, _: None = Depends(require_session)) -> Response:
+        row = get_photo(photo_id)
+        if str(row.get("media_type") or "photo") != "video":
+            raise HTTPException(status_code=404, detail="Stream unavailable")
+        try:
+            path = media.stream_path(row)
+        except MediaNotFound as exc:
+            raise HTTPException(status_code=404, detail="Video unavailable") from exc
+        except (MediaConversionError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return _file_range_response(request, path, "video/mp4")
 
     @app.get("/api/photos/{photo_id}/download")
     def download(photo_id: int, _: None = Depends(require_session)) -> FileResponse:
@@ -338,7 +421,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             path = resolve_photo_path(settings, row)
         except MediaNotFound as exc:
             raise HTTPException(status_code=404, detail="Photo unavailable") from exc
-        media_type = "image/jpeg" if str(row["format"]) == "JPEG" else "application/octet-stream"
+        if str(row.get("media_type") or "photo") == "video":
+            media_type = {
+                "MOV": "video/quicktime",
+                "WEBM": "video/webm",
+            }.get(str(row["format"]).upper(), "video/mp4")
+        else:
+            media_type = "image/jpeg" if str(row["format"]) == "JPEG" else "application/octet-stream"
         return FileResponse(path, media_type=media_type, filename=str(row["name"]))
 
     return app

@@ -41,7 +41,8 @@ RAW_EXTENSIONS = {
     ".srw",
     ".x3f",
 }
-SUPPORTED_EXTENSIONS = JPEG_EXTENSIONS | RAW_EXTENSIONS
+VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".webm"}
+SUPPORTED_EXTENSIONS = JPEG_EXTENSIONS | RAW_EXTENSIONS | VIDEO_EXTENSIONS
 
 
 class ExifToolError(RuntimeError):
@@ -129,6 +130,8 @@ def _shutter(value: Any) -> str:
 
 def _date(value: Any, fallback_timestamp: float) -> str:
     text = str(value or "").strip()
+    if text.startswith(("0000:00:00", "0000-00-00")):
+        text = ""
     if text:
         match = re.match(r"^(\d{4}):(\d{2}):(\d{2})(.*)$", text)
         if match:
