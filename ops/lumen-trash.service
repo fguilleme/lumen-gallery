@@ -1,0 +1,15 @@
+[Unit]
+Description=LUMEN - mise en corbeille recuperable des medias arrives a echeance
+After=lumen-gallery.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/francois/projects/lumen-gallery
+EnvironmentFile=/home/francois/.config/lumen-gallery/gallery.env
+ExecStart=/home/francois/projects/lumen-gallery/.venv/bin/python -m gallery.trash_worker --apply
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/francois/projects/lumen-gallery/data /home/francois/Salomé
+PrivateTmp=true
+TimeoutStartSec=10min

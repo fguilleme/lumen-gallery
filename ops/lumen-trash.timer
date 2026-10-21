@@ -1,0 +1,12 @@
+[Unit]
+Description=LUMEN - verification horaire des mises en corbeille programmees
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=60
+AccuracySec=1min
+Persistent=true
+Unit=lumen-trash.service
+
+[Install]
+WantedBy=timers.target

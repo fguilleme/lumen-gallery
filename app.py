@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import ipaddress
@@ -128,6 +129,8 @@ def _item(row: dict[str, Any]) -> dict[str, Any]:
         "media_type": media_type,
         "duration": row.get("duration"),
         "rating": int(row["rating"]),
+        "deletion_scheduled_at": row.get("deletion_scheduled_at"),
+        "delete_after": row.get("delete_after"),
         "date": str(row["date"]),
         "camera": str(row["camera"]),
         "lens": str(row["lens"]),
@@ -327,6 +330,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             scanner.start()
         return {"accepted": accepted, "errors": errors}
 
+    @app.post("/api/deletions/schedule-zero", dependencies=[Depends(_check_state_change)])
+    def schedule_zero(_: None = Depends(require_session)) -> dict[str, Any]:
+        return database.schedule_zero(now=datetime.now(timezone.utc))
+
+    @app.get("/api/deletions/status")
+    def deletion_status(_: None = Depends(require_session)) -> dict[str, int]:
+        return database.deletion_status()
+
+    @app.get("/api/deletions/trash")
+    def trashed_deletions(_: None = Depends(require_session)) -> dict[str, Any]:
+        items = database.list_trash_jobs()
+        return {"items": items, "total": len(items)}
+
     @app.get("/api/photos")
     def photos(
         q: str | None = None,
@@ -341,6 +357,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         iso_max: float | None = None,
         rating: int | None = Query(None, ge=0, le=4),
         rating_min: int | None = Query(None, ge=0, le=4),
+        deletion_status: Literal["scheduled"] | None = Query(None),
         sort: str = Query("date_desc"),
         offset: int = Query(0, ge=0),
         limit: int = Query(60, ge=1, le=200),
@@ -361,6 +378,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             iso_max=iso_max,
             rating=rating,
             rating_min=rating_min,
+            deletion_status=deletion_status,
             sort=sort,
             offset=offset,
             limit=limit,
@@ -373,7 +391,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def get_photo(photo_id: int) -> dict[str, Any]:
         row = database.get_photo(photo_id)
-        if row is None:
+        if row is None or bool(row.get("is_trashed")):
             raise HTTPException(status_code=404, detail="Photo not found")
         return row
 
@@ -395,7 +413,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _: None = Depends(require_session),
     ) -> dict[str, Any]:
         row = database.update_rating(photo_id, payload.rating)
-        if row is None:
+        if row is None or bool(row.get("is_trashed")):
+            raise HTTPException(status_code=404, detail="Photo not found")
+        return _item(row)
+
+    @app.post(
+        "/api/photos/{photo_id}/deletion/cancel",
+        dependencies=[Depends(_check_state_change)],
+    )
+    def cancel_photo_deletion(
+        photo_id: int,
+        _: None = Depends(require_session),
+    ) -> dict[str, Any]:
+        row = database.cancel_deletion(photo_id)
+        if row is None or bool(row.get("is_trashed")):
             raise HTTPException(status_code=404, detail="Photo not found")
         return _item(row)
 

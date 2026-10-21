@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#101112">
     <meta name="description" content="LUMEN — archive de médias privée.">
     <title>LUMEN · Archive de médias</title>
-    <link rel="stylesheet" href="/static/style.css?v=20261021-ratings1">
+    <link rel="stylesheet" href="/static/style.css?v=20261021-stars-filled1">
   </head>
   <body>
     <a class="skip-link" href="#main-content">Aller au contenu</a>
@@ -67,22 +67,8 @@
         </header>
 
         <main id="main-content" class="main-content" tabindex="-1">
-          <section class="archive-intro" aria-labelledby="archive-title">
-            <div>
-              <p class="eyebrow">Collection privée <span class="eyebrow-rule" aria-hidden="true"></span> LUMEN</p>
-              <h1 id="archive-title">Lumière, matière,<br><em>mémoire.</em></h1>
-            </div>
-            <p class="archive-intro__aside">Un contact-sheet vivant.<br>Chaque média à sa juste place.</p>
-          </section>
-
           <section class="control-deck" aria-label="Outils de l’archive">
             <div class="toolbar">
-              <label class="search-field" for="search-input">
-                <span class="search-icon" aria-hidden="true">⌕</span>
-                <span class="visually-hidden">Rechercher dans les noms de médias</span>
-                <input id="search-input" type="search" autocomplete="off" placeholder="Rechercher un média…">
-                <kbd>/</kbd>
-              </label>
               <label class="sort-field" for="sort-select">
                 <span class="visually-hidden">Trier les médias</span>
                 <select id="sort-select">
@@ -150,6 +136,13 @@
                       <option value="2">2 étoiles</option>
                       <option value="3">3 étoiles</option>
                       <option value="4">4 étoiles</option>
+                    </select>
+                  </label>
+                  <label for="deletion-status-filter">
+                    <span>Suppression</span>
+                    <select id="deletion-status-filter">
+                      <option value="">Toutes</option>
+                      <option value="scheduled">Programmée</option>
                     </select>
                   </label>
                   <label for="date-from">
@@ -241,6 +234,13 @@
             <div class="load-more-wrap">
               <button id="load-more" class="button button--outline" type="button" hidden>Charger la suite <span aria-hidden="true">↓</span></button>
             </div>
+            <div class="zero-deletion-wrap">
+              <button id="schedule-zero-button" class="button button--outline zero-deletion-button" type="button" disabled aria-describedby="deletion-summary">
+                <span>Programmer les 0 étoile pour la corbeille</span>
+                <span class="zero-deletion-button__count" aria-label="médias à 0 étoile"><span id="zero-deletion-count">0</span></span>
+              </button>
+              <p id="deletion-summary" class="deletion-summary inline-message" aria-live="polite"></p>
+            </div>
           </section>
 
         </main>
@@ -272,6 +272,7 @@
               <span id="lightbox-image-loader" class="lightbox-loader loader" aria-hidden="true"></span>
               <img id="lightbox-image" alt="" decoding="async">
               <video id="lightbox-video" controls playsinline preload="metadata" hidden></video>
+              <button id="lightbox-reset-zoom" class="lightbox-reset-zoom" type="button" aria-label="Réinitialiser le zoom" title="Réinitialiser le zoom" hidden>↺</button>
             </div>
             <div id="lightbox-rating" class="lightbox-rating" aria-label="Note du média"></div>
             <button id="lightbox-next" class="lightbox-nav lightbox-nav--next" type="button" aria-label="Média suivant">›</button>
@@ -292,15 +293,28 @@
             <p id="lightbox-loading" class="inline-message" aria-live="polite" hidden></p>
             <p id="lightbox-share-status" class="inline-message" aria-live="polite" hidden></p>
             <p id="lightbox-error" class="inline-message" role="alert" hidden></p>
+            <p id="lightbox-deletion-status" class="lightbox-deletion-status inline-message" aria-live="polite" hidden></p>
             <dl id="lightbox-exif-list" class="exif-list"></dl>
           </aside>
         </div>
       </div>
     </dialog>
 
+    <dialog id="schedule-zero-dialog" class="schedule-zero-dialog" aria-labelledby="schedule-zero-title" aria-describedby="schedule-zero-message" aria-modal="true">
+      <form class="schedule-zero-dialog__form" method="dialog">
+        <p class="eyebrow">Programmation prudente</p>
+        <h2 id="schedule-zero-title">Mettre en corbeille dans un mois</h2>
+        <p id="schedule-zero-message" class="schedule-zero-dialog__message"></p>
+        <div class="schedule-zero-dialog__actions">
+          <button id="schedule-zero-cancel" class="button button--outline" type="button">Annuler</button>
+          <button id="schedule-zero-confirm" class="button button--primary" type="button">Confirmer la programmation</button>
+        </div>
+      </form>
+    </dialog>
+
     <noscript>
       <div class="noscript-note">LUMEN a besoin de JavaScript pour afficher votre archive.</div>
     </noscript>
-    <script src="/static/app.js?v=20261021-ratings1"></script>
+    <script src="/static/app.js?v=20261021-stars-filled1"></script>
   </body>
 </html>

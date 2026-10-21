@@ -19,6 +19,7 @@
     ['mediaType', 'media_type'],
     ['importedOnly', 'imported_only'],
     ['rating', 'rating'],
+    ['deletionStatus', 'deletion_status'],
     ['q', 'q'],
     ['camera', 'camera'],
     ['lens', 'lens'],
@@ -160,7 +161,9 @@
     for (const [source, target] of QUERY_FIELDS) {
       const value = source === 'mediaType'
         ? (filters.mediaType ?? filters.media_type)
-        : filters[source];
+        : source === 'deletionStatus'
+          ? (filters.deletionStatus ?? filters.deletion_status)
+          : filters[source];
       if (target === 'imported_only') {
         if (value === true) {
           pairs.push('imported_only=true');
@@ -170,6 +173,12 @@
       if (target === 'rating') {
         if (isRatingFilterValue(value)) {
           pairs.push(`rating=${encodeURIComponent(String(normaliseRating(value)))}`);
+        }
+        continue;
+      }
+      if (target === 'deletion_status') {
+        if (value === 'scheduled') {
+          pairs.push('deletion_status=scheduled');
         }
         continue;
       }
@@ -193,6 +202,52 @@
     }
 
     return pairs.join('&');
+  }
+
+  function buildZeroCountQuery() {
+    return 'rating=0&limit=1';
+  }
+
+  function normaliseDeletionStatus(value) {
+    return value === 'scheduled' ? 'scheduled' : '';
+  }
+
+  function zeroCountFromPayload(payload = {}) {
+    const raw = payload?.total;
+    if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
+      return null;
+    }
+    const count = Number(raw);
+    return Number.isInteger(count) && count >= 0 ? count : null;
+  }
+
+  function deletionStatusCountFromPayload(payload = {}) {
+    const raw = payload?.scheduled;
+    if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
+      return null;
+    }
+    const count = Number(raw);
+    return Number.isInteger(count) && count >= 0 ? count : null;
+  }
+
+  function deletionDueAt(photo = {}) {
+    if (isPresent(photo.delete_after)) {
+      return photo.delete_after;
+    }
+    if (isPresent(photo.deletion_scheduled_at)) {
+      return photo.deletion_scheduled_at;
+    }
+    return null;
+  }
+
+  function isDeletionScheduled(photo = {}) {
+    return normaliseDeletionStatus(photo.deletion_status) === 'scheduled'
+      || deletionDueAt(photo) !== null;
+  }
+
+  function confirmationMessageForZeroSchedule(count) {
+    const safeCount = Number.isInteger(Number(count)) && Number(count) >= 0 ? Number(count) : 0;
+    return `Tous les ${safeCount} médias à 0 étoile, y compris hors des filtres actuels, seront placés en corbeille dans un mois. Remettre une étoile annule la programmation. Aucun fichier supprimé définitivement.`;
   }
 
   function formatBytes(value) {
@@ -410,6 +465,11 @@
     }).format(date);
   }
 
+  function formatDeletionDueDate(value) {
+    const formatted = formatDate(value, { short: true });
+    return formatted === '—' ? '' : formatted;
+  }
+
   function finiteNumber(value) {
     const number = Number(value);
     return Number.isFinite(number) ? number : null;
@@ -496,24 +556,151 @@
     return RAW_FORMATS.has(extension);
   }
 
+  function clampViewerZoom(value, min = 1, max = 5) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+      return min;
+    }
+    return Math.min(max, Math.max(min, number));
+  }
+
+  function viewerRectEdges(rect = {}) {
+    const left = Number(rect.left) || 0;
+    const top = Number(rect.top) || 0;
+    const width = Math.max(0, Number(rect.width) || 0);
+    const height = Math.max(0, Number(rect.height) || 0);
+    const right = Number.isFinite(Number(rect.right)) ? Number(rect.right) : left + width;
+    const bottom = Number.isFinite(Number(rect.bottom)) ? Number(rect.bottom) : top + height;
+    return { left, top, right, bottom, width: right - left, height: bottom - top };
+  }
+
+  function clampAxis(value, minimum, maximum) {
+    return Math.min(maximum, Math.max(minimum, Number(value) || 0));
+  }
+
+  function viewerPanBounds({baseRect, viewportRect, zoom}) {
+    const base = viewerRectEdges(baseRect);
+    const viewport = viewerRectEdges(viewportRect);
+    const safeZoom = clampViewerZoom(zoom);
+    const centerX = (base.left + base.right) / 2;
+    const centerY = (base.top + base.bottom) / 2;
+    const scaledWidth = base.width * safeZoom;
+    const scaledHeight = base.height * safeZoom;
+    const scaledLeft = centerX - scaledWidth / 2;
+    const scaledRight = centerX + scaledWidth / 2;
+    const scaledTop = centerY - scaledHeight / 2;
+    const scaledBottom = centerY + scaledHeight / 2;
+    return {
+      x: scaledWidth > viewport.width
+        ? { min: viewport.right - scaledRight, max: viewport.left - scaledLeft }
+        : { min: 0, max: 0 },
+      y: scaledHeight > viewport.height
+        ? { min: viewport.bottom - scaledBottom, max: viewport.top - scaledTop }
+        : { min: 0, max: 0 },
+    };
+  }
+
+  function clampViewerPan(pan = {}, {baseRect, viewportRect, zoom} = {}) {
+    const bounds = viewerPanBounds({baseRect, viewportRect, zoom});
+    return {
+      x: clampAxis(pan.x, bounds.x.min, bounds.x.max),
+      y: clampAxis(pan.y, bounds.y.min, bounds.y.max),
+    };
+  }
+
+  function zoomViewerAroundPoint({
+    baseRect,
+    viewportRect,
+    currentZoom,
+    currentPan = {x: 0, y: 0},
+    nextZoom,
+    point,
+  }) {
+    const base = viewerRectEdges(baseRect);
+    const center = {
+      x: (base.left + base.right) / 2,
+      y: (base.top + base.bottom) / 2,
+    };
+    const safeCurrentZoom = clampViewerZoom(currentZoom);
+    const safeNextZoom = clampViewerZoom(nextZoom);
+    const sourcePoint = {
+      x: center.x + (Number(point?.x) - center.x - (Number(currentPan.x) || 0)) / safeCurrentZoom,
+      y: center.y + (Number(point?.y) - center.y - (Number(currentPan.y) || 0)) / safeCurrentZoom,
+    };
+    const rawPan = {
+      x: Number(point?.x) - center.x - safeNextZoom * (sourcePoint.x - center.x),
+      y: Number(point?.y) - center.y - safeNextZoom * (sourcePoint.y - center.y),
+    };
+    return {
+      zoom: safeNextZoom,
+      pan: clampViewerPan(rawPan, {baseRect, viewportRect, zoom: safeNextZoom}),
+    };
+  }
+
+  function pinchViewerTransform({
+    baseRect,
+    viewportRect,
+    startZoom,
+    startPan = {x: 0, y: 0},
+    startDistance,
+    currentDistance,
+    startMidpoint,
+    currentMidpoint,
+  }) {
+    const safeStartDistance = Math.max(0.0001, Number(startDistance) || 0);
+    const safeStartZoom = clampViewerZoom(startZoom);
+    const nextZoom = clampViewerZoom(
+      safeStartZoom * ((Number(currentDistance) || safeStartDistance) / safeStartDistance),
+    );
+    const base = viewerRectEdges(baseRect);
+    const center = {
+      x: (base.left + base.right) / 2,
+      y: (base.top + base.bottom) / 2,
+    };
+    const sourcePoint = {
+      x: center.x + (Number(startMidpoint?.x) - center.x - (Number(startPan.x) || 0)) / safeStartZoom,
+      y: center.y + (Number(startMidpoint?.y) - center.y - (Number(startPan.y) || 0)) / safeStartZoom,
+    };
+    const rawPan = {
+      x: Number(currentMidpoint?.x) - center.x - nextZoom * (sourcePoint.x - center.x),
+      y: Number(currentMidpoint?.y) - center.y - nextZoom * (sourcePoint.y - center.y),
+    };
+    return {
+      zoom: nextZoom,
+      pan: clampViewerPan(rawPan, {baseRect, viewportRect, zoom: nextZoom}),
+    };
+  }
+
   const helpers = {
     buildPhotoQuery,
+    buildZeroCountQuery,
+    confirmationMessageForZeroSchedule,
+    deletionDueAt,
+    isDeletionScheduled,
     normaliseRating,
+    normaliseDeletionStatus,
+    deletionStatusCountFromPayload,
     createRatingQueue,
     formatBytes,
     formatDuration,
     formatUploadSelection,
     getPhotoAspectRatio,
     formatExifValue,
+    zeroCountFromPayload,
     hasMediaTypeContract,
     matchesMediaTypeFilter,
     mediaTypeOf,
     formatDate,
+    formatDeletionDueDate,
     sessionPresentation,
     buildExifRows,
     shareFileName,
     shareFileType,
     isRawMedia,
+    clampViewerZoom,
+    clampViewerPan,
+    zoomViewerAroundPoint,
+    pinchViewerTransform,
   };
 
   if (typeof module !== 'undefined' && module.exports) {
@@ -542,6 +729,16 @@
     statusSequence: 0,
     statusTimer: null,
     statusRunning: null,
+    deletionSummaryRequest: null,
+    deletionSummarySequence: 0,
+    deletionSummaryTimer: null,
+    zeroDeletionCount: null,
+    scheduledDeletionCount: null,
+    trashedDeletionCount: null,
+    deletionDueAt: null,
+    deletionScheduleInFlight: false,
+    deletionPreviousFocus: null,
+    deletionDialogCount: null,
     refreshAfterScan: false,
     scanPending: false,
     searchTimer: null,
@@ -563,6 +760,16 @@
     shareInFlight: false,
     previousFocus: null,
     swipeStartX: null,
+    swipeStartY: null,
+    swipePointerId: null,
+    viewerZoom: 1,
+    viewerPanX: 0,
+    viewerPanY: 0,
+    viewerBaseRect: null,
+    viewerPointers: new Map(),
+    viewerGesture: null,
+    viewerGestureHadMultiple: false,
+    viewerLastTap: null,
     galleryLayoutFrame: null,
     galleryLayoutWidth: null,
     ratingQueue: null,
@@ -597,6 +804,7 @@
     mediaTypeSelect: document.getElementById('media-type-filter'),
     importedOnlyFilter: document.getElementById('imported-only-filter'),
     ratingFilter: document.getElementById('rating-filter'),
+    deletionStatusFilter: document.getElementById('deletion-status-filter'),
     gridSize: document.getElementById('grid-size'),
     gridSizeValue: document.getElementById('grid-size-value'),
     filtersForm: document.getElementById('filters-form'),
@@ -617,6 +825,9 @@
     galleryError: document.getElementById('gallery-error'),
     galleryErrorText: document.getElementById('gallery-error-text'),
     loadMore: document.getElementById('load-more'),
+    scheduleZeroButton: document.getElementById('schedule-zero-button'),
+    zeroDeletionCount: document.getElementById('zero-deletion-count'),
+    deletionSummary: document.getElementById('deletion-summary'),
     lightbox: document.getElementById('lightbox'),
     lightboxTitle: document.getElementById('lightbox-title'),
     lightboxPosition: document.getElementById('lightbox-position'),
@@ -624,16 +835,23 @@
     lightboxVideo: document.getElementById('lightbox-video'),
     lightboxImageLoader: document.getElementById('lightbox-image-loader'),
     lightboxImageFrame: document.getElementById('lightbox-image-frame'),
+    lightboxMedia: document.querySelector('.lightbox-media'),
+    lightboxResetZoom: document.getElementById('lightbox-reset-zoom'),
     lightboxRating: document.getElementById('lightbox-rating'),
     lightboxShare: document.getElementById('lightbox-share'),
     lightboxSharePreview: document.getElementById('lightbox-share-preview'),
     lightboxExif: document.getElementById('lightbox-exif-list'),
     lightboxLoading: document.getElementById('lightbox-loading'),
     lightboxError: document.getElementById('lightbox-error'),
+    lightboxDeletionStatus: document.getElementById('lightbox-deletion-status'),
     lightboxShareStatus: document.getElementById('lightbox-share-status'),
     lightboxPrevious: document.getElementById('lightbox-previous'),
     lightboxNext: document.getElementById('lightbox-next'),
     lightboxClose: document.getElementById('lightbox-close'),
+    scheduleZeroDialog: document.getElementById('schedule-zero-dialog'),
+    scheduleZeroMessage: document.getElementById('schedule-zero-message'),
+    scheduleZeroCancel: document.getElementById('schedule-zero-cancel'),
+    scheduleZeroConfirm: document.getElementById('schedule-zero-confirm'),
   };
 
   class ApiError extends Error {
@@ -716,12 +934,17 @@
   }
 
   function cancelPendingRequests() {
-    [state.photosRequest, state.facetsRequest, state.statusRequest, state.lightboxRequest]
+    [state.photosRequest, state.facetsRequest, state.statusRequest, state.deletionSummaryRequest, state.lightboxRequest]
       .filter(Boolean)
       .forEach((controller) => controller.abort());
+    if (state.deletionSummaryTimer !== null) {
+      window.clearTimeout(state.deletionSummaryTimer);
+      state.deletionSummaryTimer = null;
+    }
     state.photosSequence += 1;
     state.facetsSequence += 1;
     state.statusSequence += 1;
+    state.deletionSummarySequence += 1;
     state.lightboxSequence += 1;
   }
 
@@ -733,6 +956,7 @@
     if (dom.lightbox.open || dom.lightbox.hasAttribute('open')) {
       closeLightbox();
     }
+    closeScheduleZeroDialog();
     setHidden(dom.appView, true);
     setHidden(dom.loginView, false);
     setHidden(dom.logoutButton, false);
@@ -755,11 +979,12 @@
     void loadFacets();
     void loadPhotos({ reset: true });
     void refreshStatus();
+    void refreshDeletionSummary();
   }
 
   function currentFilters() {
     return {
-      q: dom.searchInput.value,
+      q: dom.searchInput?.value || '',
       camera: dom.cameraSelect.value,
       lens: dom.lensSelect.value,
       format: dom.formatSelect.value,
@@ -771,6 +996,7 @@
       mediaType: dom.mediaTypeSelect.value,
       importedOnly: dom.importedOnlyFilter.checked,
       rating: dom.ratingFilter.value,
+      deletionStatus: dom.deletionStatusFilter.value,
       offset: state.offset,
       limit: PAGE_SIZE,
     };
@@ -785,9 +1011,12 @@
   }
 
   function clearFiltersForImportedOnly() {
-    dom.searchInput.value = '';
+    if (dom.searchInput) {
+      dom.searchInput.value = '';
+    }
     dom.mediaTypeSelect.value = '';
     dom.ratingFilter.value = '';
+    dom.deletionStatusFilter.value = '';
     dom.cameraSelect.value = '';
     dom.lensSelect.value = '';
     dom.formatSelect.value = '';
@@ -812,6 +1041,9 @@
     if (isRatingFilterValue(params.get('rating'))) {
       dom.ratingFilter.value = String(normaliseRating(params.get('rating')));
     }
+    if (normaliseDeletionStatus(params.get('deletion_status'))) {
+      dom.deletionStatusFilter.value = 'scheduled';
+    }
   }
 
   function updateFilterCount() {
@@ -819,6 +1051,7 @@
       dom.mediaTypeSelect.value,
       dom.importedOnlyFilter.checked ? 'true' : '',
       dom.ratingFilter.value,
+      dom.deletionStatusFilter.value,
       dom.cameraSelect.value,
       dom.lensSelect.value,
       dom.formatSelect.value,
@@ -922,6 +1155,65 @@
     parent.append(metadata);
   }
 
+  function deletionBadgeText(photo = {}) {
+    const due = formatDeletionDueDate(deletionDueAt(photo));
+    return due ? `Corbeille · ${due}` : 'Corbeille programmée';
+  }
+
+  function makeDeletionBadge(photo = {}) {
+    if (!isDeletionScheduled(photo)) {
+      return null;
+    }
+    const badge = textElement('span', 'photo-card__deletion');
+    badge.append(
+      textElement('span', 'photo-card__deletion-icon', '◷'),
+      textElement('span', '', deletionBadgeText(photo)),
+    );
+    badge.setAttribute('aria-label', deletionBadgeText(photo));
+    return badge;
+  }
+
+  function renderCardDeletionBadge(card, photo) {
+    const frame = card?.querySelector('.photo-card__frame');
+    if (!frame) {
+      return;
+    }
+    frame.querySelector('.photo-card__deletion')?.remove();
+    const badge = makeDeletionBadge(photo);
+    if (badge) {
+      frame.append(badge);
+    }
+  }
+
+  function updateDeletionUiForId(id) {
+    const photo = findPhotoById(id);
+    if (!photo) {
+      return;
+    }
+    [...dom.gallery.querySelectorAll('.photo-card')]
+      .filter((card) => card.dataset.photoId === String(id))
+      .forEach((card) => renderCardDeletionBadge(card, photo));
+    if (state.lightboxIndex >= 0 && String(state.items[state.lightboxIndex]?.id) === String(id)) {
+      renderLightboxDeletionStatus(photo);
+    }
+  }
+
+  function renderLightboxDeletionStatus(photo = {}) {
+    if (!dom.lightboxDeletionStatus) {
+      return;
+    }
+    if (!isDeletionScheduled(photo)) {
+      setMessage(dom.lightboxDeletionStatus, '');
+      return;
+    }
+    const due = formatDeletionDueDate(deletionDueAt(photo));
+    setMessage(
+      dom.lightboxDeletionStatus,
+      due ? `Corbeille prévue le ${due}.` : 'Corbeille programmée.',
+      'info',
+    );
+  }
+
   function ratingDescription(rating) {
     return rating === 1 ? '1 étoile' : `${rating} étoiles`;
   }
@@ -947,6 +1239,10 @@
       const starValue = Number(button.dataset.ratingValue);
       const selected = starValue <= value;
       button.classList.toggle('is-filled', selected);
+      const glyph = button.querySelector('span[aria-hidden="true"]');
+      if (glyph) {
+        glyph.textContent = selected ? '★' : '☆';
+      }
       button.setAttribute('aria-pressed', String(selected));
       button.setAttribute(
         'aria-label',
@@ -998,6 +1294,19 @@
       ...(matchingIncoming || {}),
       rating: normaliseRating(rating),
     };
+    if (normaliseRating(rating) >= 1) {
+      state.items[index].deletion_scheduled_at = matchingIncoming
+        && Object.prototype.hasOwnProperty.call(matchingIncoming, 'deletion_scheduled_at')
+        ? matchingIncoming.deletion_scheduled_at
+        : null;
+      state.items[index].delete_after = matchingIncoming
+        && Object.prototype.hasOwnProperty.call(matchingIncoming, 'delete_after')
+        ? matchingIncoming.delete_after
+        : null;
+      if (state.items[index].deletion_scheduled_at === null && state.items[index].delete_after === null) {
+        delete state.items[index].deletion_status;
+      }
+    }
   }
 
   function applyRatingToUi(id, rating, { pending = false, error = '' } = {}) {
@@ -1018,6 +1327,14 @@
 
   function hasActiveRatingFilter() {
     return isRatingFilterValue(dom.ratingFilter?.value);
+  }
+
+  function hasActiveDeletionFilter() {
+    return normaliseDeletionStatus(dom.deletionStatusFilter?.value) === 'scheduled';
+  }
+
+  function hasActiveMutationFilter() {
+    return hasActiveRatingFilter() || hasActiveDeletionFilter();
   }
 
   function persistRating(id, rating) {
@@ -1044,11 +1361,15 @@
     if (event.error) {
       const message = `La note n’a pas pu être enregistrée. ${displayErrorMessage(event.error, 'Réessayez.')}`;
       applyRatingToUi(id, event.serverRating, { error: message });
+      updateDeletionUiForId(id);
+      scheduleDeletionSummaryRefresh();
       return;
     }
 
     applyRatingToUi(id, event.serverRating);
-    if (hasActiveRatingFilter()) {
+    updateDeletionUiForId(id);
+    scheduleDeletionSummaryRefresh();
+    if (hasActiveMutationFilter()) {
       if (isLightboxOpen()) {
         state.ratingFilterRefreshPending = true;
       } else {
@@ -1177,6 +1498,10 @@
     overlay.append(textElement('span', 'photo-card__index', String(index + 1).padStart(2, '0')));
     overlay.append(textElement('span', 'photo-card__open-hint', 'Voir'));
     frame.append(overlay);
+    const deletionBadge = makeDeletionBadge(photo);
+    if (deletionBadge) {
+      frame.append(deletionBadge);
+    }
     button.append(frame);
     const media = textElement('div', 'photo-card__media');
     media.append(button, makeRatingControl(photo, 'card'));
@@ -1424,6 +1749,7 @@
             selectImportedOnly();
           }
           await refreshLibrary();
+          scheduleDeletionSummaryRefresh();
           if (state.uploadPending !== null) {
             const errorCount = Math.max(statusErrorCount, state.uploadErrorCount);
             if (errorCount > 0) {
@@ -1458,6 +1784,199 @@
       if (state.statusRequest === controller) {
         state.statusRequest = null;
       }
+    }
+  }
+
+  async function refreshDeletionSummary() {
+    if (!state.authenticated) {
+      return false;
+    }
+    if (state.deletionSummaryTimer !== null) {
+      window.clearTimeout(state.deletionSummaryTimer);
+      state.deletionSummaryTimer = null;
+    }
+    if (state.deletionSummaryRequest) {
+      state.deletionSummaryRequest.abort();
+    }
+    const controller = new AbortController();
+    state.deletionSummaryRequest = controller;
+    const sequence = ++state.deletionSummarySequence;
+    const results = await Promise.allSettled([
+      fetchJson(`/api/photos?${buildZeroCountQuery()}`, { signal: controller.signal }),
+      fetchJson('/api/deletions/status', { signal: controller.signal }),
+    ]);
+    if (sequence !== state.deletionSummarySequence || controller.signal.aborted) {
+      if (state.deletionSummaryRequest === controller) {
+        state.deletionSummaryRequest = null;
+      }
+      return false;
+    }
+
+    const [zeroResult, statusResult] = results;
+    if (zeroResult.status === 'fulfilled') {
+      const count = zeroCountFromPayload(zeroResult.value);
+      if (count !== null) {
+        state.zeroDeletionCount = count;
+      }
+    }
+    if (statusResult.status === 'fulfilled') {
+      const scheduled = deletionStatusCountFromPayload(statusResult.value);
+      if (scheduled !== null) {
+        state.scheduledDeletionCount = scheduled;
+      }
+      const trashedRaw = statusResult.value?.trashed;
+      const trashed = trashedRaw === null || trashedRaw === undefined ? null : Number(trashedRaw);
+      if (Number.isInteger(trashed) && trashed >= 0) {
+        state.trashedDeletionCount = trashed;
+      }
+      if (isPresent(statusResult.value?.due_at)) {
+        state.deletionDueAt = statusResult.value.due_at;
+      }
+    }
+    renderDeletionSummary();
+    if (zeroResult.status === 'rejected' && statusResult.status === 'rejected') {
+      setMessage(dom.deletionSummary, 'Le statut de la corbeille est indisponible.', 'error');
+    }
+    const countAvailable = zeroResult.status === 'fulfilled'
+      && zeroCountFromPayload(zeroResult.value) !== null;
+    if (state.deletionSummaryRequest === controller) {
+      state.deletionSummaryRequest = null;
+    }
+    return countAvailable;
+  }
+
+  function scheduleDeletionSummaryRefresh(delay = 240) {
+    if (!state.authenticated) {
+      return;
+    }
+    if (state.deletionSummaryTimer !== null) {
+      window.clearTimeout(state.deletionSummaryTimer);
+    }
+    state.deletionSummaryTimer = window.setTimeout(() => {
+      state.deletionSummaryTimer = null;
+      void refreshDeletionSummary();
+    }, delay);
+  }
+
+  function renderDeletionSummary() {
+    if (!dom.zeroDeletionCount || !dom.scheduleZeroButton) {
+      return;
+    }
+    const count = state.zeroDeletionCount;
+    dom.zeroDeletionCount.textContent = count === null ? '—' : String(count);
+    const enabled = Number.isInteger(count) && count > 0;
+    dom.scheduleZeroButton.disabled = state.deletionScheduleInFlight || !enabled;
+    dom.scheduleZeroButton.setAttribute(
+      'aria-label',
+      enabled
+        ? `Programmer les ${count} médias à 0 étoile pour la corbeille`
+        : 'Programmer les médias à 0 étoile pour la corbeille',
+    );
+
+    const parts = [];
+    if (state.scheduledDeletionCount !== null) {
+      parts.push(`${state.scheduledDeletionCount} programmé${state.scheduledDeletionCount === 1 ? '' : 's'}`);
+    }
+    if (state.trashedDeletionCount !== null && state.trashedDeletionCount > 0) {
+      parts.push(`${state.trashedDeletionCount} en corbeille`);
+    }
+    if (state.scheduledDeletionCount > 0 && state.deletionDueAt) {
+      const due = formatDeletionDueDate(state.deletionDueAt);
+      if (due) {
+        parts.push(`prochaine corbeille le ${due}`);
+      }
+    }
+    setMessage(dom.deletionSummary, parts.join(' · '), 'info');
+  }
+
+  function isScheduleZeroDialogOpen() {
+    return Boolean(dom.scheduleZeroDialog?.open || dom.scheduleZeroDialog?.hasAttribute('open'));
+  }
+
+  function closeScheduleZeroDialog() {
+    if (!dom.scheduleZeroDialog) {
+      return;
+    }
+    if (dom.scheduleZeroDialog.open && typeof dom.scheduleZeroDialog.close === 'function') {
+      dom.scheduleZeroDialog.close();
+    } else {
+      dom.scheduleZeroDialog.removeAttribute('open');
+    }
+    document.body.classList.toggle('modal-open', isLightboxOpen());
+    const previousFocus = state.deletionPreviousFocus;
+    state.deletionPreviousFocus = null;
+    state.deletionDialogCount = null;
+    if (previousFocus && typeof previousFocus.focus === 'function' && !previousFocus.hidden) {
+      previousFocus.focus({ preventScroll: true });
+    }
+  }
+
+  function openScheduleZeroDialog(count) {
+    state.deletionDialogCount = count;
+    dom.scheduleZeroMessage.textContent = confirmationMessageForZeroSchedule(count);
+    state.deletionPreviousFocus = document.activeElement;
+    if (typeof dom.scheduleZeroDialog.showModal === 'function') {
+      dom.scheduleZeroDialog.showModal();
+    } else {
+      dom.scheduleZeroDialog.setAttribute('open', '');
+    }
+    document.body.classList.add('modal-open');
+    window.setTimeout(() => dom.scheduleZeroConfirm?.focus({ preventScroll: true }), 0);
+  }
+
+  async function prepareScheduleZeroConfirmation() {
+    if (!dom.scheduleZeroButton || dom.scheduleZeroButton.disabled || state.deletionScheduleInFlight) {
+      return;
+    }
+    dom.scheduleZeroButton.disabled = true;
+    dom.scheduleZeroButton.setAttribute('aria-busy', 'true');
+    try {
+      const refreshed = await refreshDeletionSummary();
+      const count = state.zeroDeletionCount;
+      if (refreshed && Number.isInteger(count) && count > 0) {
+        openScheduleZeroDialog(count);
+      }
+    } catch (error) {
+      setMessage(dom.deletionSummary, displayErrorMessage(error, 'Le nombre de médias n’a pas pu être actualisé.'), 'error');
+    } finally {
+      dom.scheduleZeroButton.removeAttribute('aria-busy');
+      if (!isScheduleZeroDialogOpen() && !state.deletionScheduleInFlight) {
+        renderDeletionSummary();
+      }
+    }
+  }
+
+  async function confirmScheduleZero() {
+    const count = state.deletionDialogCount;
+    if (!Number.isInteger(count) || count <= 0 || state.deletionScheduleInFlight) {
+      return;
+    }
+    state.deletionScheduleInFlight = true;
+    dom.scheduleZeroConfirm.disabled = true;
+    dom.scheduleZeroCancel.disabled = true;
+    dom.scheduleZeroConfirm.setAttribute('aria-busy', 'true');
+    try {
+      const payload = await fetchJson('/api/deletions/schedule-zero', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (isPresent(payload?.due_at)) {
+        state.deletionDueAt = payload.due_at;
+      }
+      closeScheduleZeroDialog();
+      await Promise.allSettled([
+        refreshPhotosPreservingScroll(),
+        refreshDeletionSummary(),
+      ]);
+    } catch (error) {
+      setMessage(dom.deletionSummary, displayErrorMessage(error, 'La programmation n’a pas pu être enregistrée.'), 'error');
+    } finally {
+      state.deletionScheduleInFlight = false;
+      dom.scheduleZeroConfirm.disabled = false;
+      dom.scheduleZeroCancel.disabled = false;
+      dom.scheduleZeroConfirm.removeAttribute('aria-busy');
+      renderDeletionSummary();
     }
   }
 
@@ -1678,11 +2197,368 @@
   }
 
   function resetLightboxMedia() {
+    resetViewerZoom();
     resetLightboxImage();
     resetLightboxVideo();
     setHidden(dom.lightboxImageLoader, true);
     dom.lightboxImageFrame.classList.remove('is-missing');
     dom.lightboxImageFrame.classList.remove('is-video');
+    dom.lightboxMedia?.classList.remove('is-photo', 'is-video');
+  }
+
+  function isPhotoLightbox() {
+    const photo = state.items[state.lightboxIndex];
+    return Boolean(photo && mediaTypeOf(photo) === 'photo' && dom.lightboxImage && !dom.lightboxImage.hidden);
+  }
+
+  function lightboxViewerViewportRect() {
+    const rect = dom.lightboxImageFrame?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) {
+      return null;
+    }
+    return {
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
+  function measureLightboxImageBaseRect() {
+    if (!isPhotoLightbox()) {
+      return null;
+    }
+    const image = dom.lightboxImage;
+    const previousTransform = image.style.transform;
+    image.style.transform = 'none';
+    const rect = image.getBoundingClientRect();
+    image.style.transform = previousTransform;
+    if (rect.width <= 0 || rect.height <= 0) {
+      return null;
+    }
+    return {
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
+  function captureLightboxImageBaseRect() {
+    state.viewerBaseRect = measureLightboxImageBaseRect();
+    return state.viewerBaseRect;
+  }
+
+  function viewerPointerValues() {
+    return [...state.viewerPointers.values()];
+  }
+
+  function viewerDistance(first, second) {
+    return Math.hypot(second.x - first.x, second.y - first.y);
+  }
+
+  function viewerMidpoint(first, second) {
+    return {
+      x: (first.x + second.x) / 2,
+      y: (first.y + second.y) / 2,
+    };
+  }
+
+  function isViewerInteractiveTarget(target) {
+    return Boolean(target?.closest?.(
+      'button, a, input, select, textarea, video, .rating-control, .lightbox-loader',
+    ));
+  }
+
+  function applyLightboxViewerTransform() {
+    if (!dom.lightboxImage) {
+      return;
+    }
+    const active = isPhotoLightbox() && state.viewerZoom > 1;
+    if (!active) {
+      dom.lightboxImage.style.transform = 'none';
+    } else {
+      dom.lightboxImage.style.transform = `translate3d(${state.viewerPanX}px, ${state.viewerPanY}px, 0) scale(${state.viewerZoom})`;
+    }
+    dom.lightboxImage.dataset.viewerZoom = String(state.viewerZoom);
+    dom.lightboxImage.dataset.viewerPanX = String(state.viewerPanX);
+    dom.lightboxImage.dataset.viewerPanY = String(state.viewerPanY);
+    setHidden(dom.lightboxResetZoom, !active);
+  }
+
+  function resetViewerGestureState() {
+    state.viewerPointers.clear();
+    state.viewerGesture = null;
+    state.viewerGestureHadMultiple = false;
+    state.viewerLastTap = null;
+    state.swipeStartX = null;
+    state.swipeStartY = null;
+    state.swipePointerId = null;
+  }
+
+  function resetViewerZoom() {
+    state.viewerZoom = 1;
+    state.viewerPanX = 0;
+    state.viewerPanY = 0;
+    state.viewerBaseRect = null;
+    resetViewerGestureState();
+    applyLightboxViewerTransform();
+  }
+
+  function ensureViewerBaseRect() {
+    return state.viewerBaseRect || captureLightboxImageBaseRect();
+  }
+
+  function setLightboxViewerTransform(result) {
+    state.viewerZoom = result.zoom;
+    state.viewerPanX = Math.abs(result.pan.x) < 0.0001 ? 0 : result.pan.x;
+    state.viewerPanY = Math.abs(result.pan.y) < 0.0001 ? 0 : result.pan.y;
+    applyLightboxViewerTransform();
+  }
+
+  function zoomLightboxAroundPoint(point, nextZoom) {
+    if (!isPhotoLightbox()) {
+      return;
+    }
+    const baseRect = ensureViewerBaseRect();
+    const viewportRect = lightboxViewerViewportRect();
+    if (!baseRect || !viewportRect) {
+      return;
+    }
+    setLightboxViewerTransform(zoomViewerAroundPoint({
+      baseRect,
+      viewportRect,
+      currentZoom: state.viewerZoom,
+      currentPan: { x: state.viewerPanX, y: state.viewerPanY },
+      nextZoom,
+      point,
+    }));
+  }
+
+  function toggleLightboxDoubleTap(point) {
+    const now = performance.now();
+    const previous = state.viewerLastTap;
+    if (previous && now - previous.time <= 320 && Math.hypot(point.x - previous.x, point.y - previous.y) <= 36) {
+      state.viewerLastTap = null;
+      if (state.viewerZoom > 1) {
+        resetViewerZoom();
+      } else {
+        zoomLightboxAroundPoint(point, 2.5);
+      }
+      return;
+    }
+    state.viewerLastTap = { time: now, x: point.x, y: point.y };
+  }
+
+  function beginLightboxPinch() {
+    const [first, second] = viewerPointerValues();
+    if (!first || !second) {
+      return;
+    }
+    if (!ensureViewerBaseRect()) {
+      return;
+    }
+    state.viewerGestureHadMultiple = true;
+    state.viewerGesture = {
+      kind: 'pinch',
+      startDistance: viewerDistance(first, second),
+      startMidpoint: viewerMidpoint(first, second),
+      startZoom: state.viewerZoom,
+      startPan: { x: state.viewerPanX, y: state.viewerPanY },
+    };
+    state.swipeStartX = null;
+    state.swipeStartY = null;
+    state.swipePointerId = null;
+  }
+
+  function updateLightboxPinch() {
+    const [first, second] = viewerPointerValues();
+    const gesture = state.viewerGesture;
+    const baseRect = state.viewerBaseRect;
+    const viewportRect = lightboxViewerViewportRect();
+    if (!first || !second || !gesture || gesture.kind !== 'pinch' || !baseRect || !viewportRect) {
+      return;
+    }
+    setLightboxViewerTransform(pinchViewerTransform({
+      baseRect,
+      viewportRect,
+      startZoom: gesture.startZoom,
+      startPan: gesture.startPan,
+      startDistance: gesture.startDistance,
+      currentDistance: viewerDistance(first, second),
+      startMidpoint: gesture.startMidpoint,
+      currentMidpoint: viewerMidpoint(first, second),
+    }));
+  }
+
+  function updateLightboxPan(gesture, event) {
+    const baseRect = ensureViewerBaseRect();
+    const viewportRect = lightboxViewerViewportRect();
+    if (!baseRect || !viewportRect) {
+      return;
+    }
+    const dx = event.clientX - gesture.startX;
+    const dy = event.clientY - gesture.startY;
+    const pan = clampViewerPan(
+      { x: gesture.startPan.x + dx, y: gesture.startPan.y + dy },
+      { baseRect, viewportRect, zoom: state.viewerZoom },
+    );
+    state.viewerPanX = pan.x;
+    state.viewerPanY = pan.y;
+    gesture.moved = gesture.moved || Math.hypot(dx, dy) > 8;
+    if (gesture.moved) {
+      state.viewerLastTap = null;
+    }
+    applyLightboxViewerTransform();
+  }
+
+  function onLightboxPointerDown(event) {
+    if (!isPhotoLightbox() || isViewerInteractiveTarget(event.target)) {
+      return;
+    }
+    if (event.pointerType === 'mouse' && event.button !== 0) {
+      return;
+    }
+    const pointer = { x: event.clientX, y: event.clientY };
+    if (event.pointerType === 'touch') {
+      state.viewerPointers.set(event.pointerId, pointer);
+      if (state.viewerPointers.size >= 2) {
+        beginLightboxPinch();
+      } else if (!state.viewerGestureHadMultiple) {
+        state.viewerGesture = {
+          kind: state.viewerZoom > 1 ? 'pan' : 'swipe',
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          startPan: { x: state.viewerPanX, y: state.viewerPanY },
+          moved: false,
+        };
+        state.swipeStartX = state.viewerZoom === 1 ? event.clientX : null;
+        state.swipeStartY = state.viewerZoom === 1 ? event.clientY : null;
+        state.swipePointerId = state.viewerZoom === 1 ? event.pointerId : null;
+      }
+      event.currentTarget?.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+      return;
+    }
+    if (event.pointerType === 'mouse' && state.viewerZoom > 1) {
+      state.viewerGesture = {
+        kind: 'mouse-pan',
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        startPan: { x: state.viewerPanX, y: state.viewerPanY },
+        moved: false,
+      };
+      event.currentTarget?.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+    }
+  }
+
+  function onLightboxPointerMove(event) {
+    if (!isPhotoLightbox()) {
+      return;
+    }
+    if (event.pointerType === 'touch' && state.viewerPointers.has(event.pointerId)) {
+      state.viewerPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (state.viewerPointers.size >= 2) {
+        if (!state.viewerGesture || state.viewerGesture.kind !== 'pinch') {
+          beginLightboxPinch();
+        }
+        updateLightboxPinch();
+        event.preventDefault();
+        return;
+      }
+    }
+    const gesture = state.viewerGesture;
+    if (!gesture || gesture.pointerId !== event.pointerId || gesture.kind === 'pinch') {
+      return;
+    }
+    if (gesture.kind === 'pan' || gesture.kind === 'mouse-pan') {
+      updateLightboxPan(gesture, event);
+      event.preventDefault();
+      return;
+    }
+    if (gesture.kind === 'swipe') {
+      gesture.moved = gesture.moved || Math.hypot(
+        event.clientX - gesture.startX,
+        event.clientY - gesture.startY,
+      ) > 8;
+      if (gesture.moved) {
+        state.viewerLastTap = null;
+      }
+      event.preventDefault();
+    }
+  }
+
+  function onLightboxPointerUp(event) {
+    if (!isPhotoLightbox()) {
+      return;
+    }
+    const gesture = state.viewerGesture;
+    if (event.pointerType === 'touch') {
+      state.viewerPointers.delete(event.pointerId);
+      if (state.viewerPointers.size > 0) {
+        event.preventDefault();
+        return;
+      }
+      state.viewerGesture = null;
+      state.swipeStartX = null;
+      state.swipeStartY = null;
+      state.swipePointerId = null;
+      if (state.viewerGestureHadMultiple) {
+        state.viewerGestureHadMultiple = false;
+        state.viewerLastTap = null;
+        event.preventDefault();
+        return;
+      }
+      if (!gesture || gesture.pointerId !== event.pointerId) {
+        return;
+      }
+      if ((gesture.kind === 'swipe' || gesture.kind === 'pan') && !gesture.moved) {
+        toggleLightboxDoubleTap({ x: event.clientX, y: event.clientY });
+        event.preventDefault();
+        return;
+      }
+      if (gesture.kind === 'swipe' && state.viewerZoom === 1) {
+        const distanceX = event.clientX - gesture.startX;
+        const distanceY = event.clientY - gesture.startY;
+        if (Math.abs(distanceX) >= 48 && Math.abs(distanceX) > Math.abs(distanceY) * 1.15) {
+          state.viewerLastTap = null;
+          navigateLightbox(distanceX < 0 ? 1 : -1);
+        }
+      }
+      event.preventDefault();
+      return;
+    }
+    if (gesture?.pointerId === event.pointerId) {
+      state.viewerGesture = null;
+    }
+  }
+
+  function onLightboxPointerCancel(event) {
+    state.viewerPointers.delete(event.pointerId);
+    state.viewerGesture = null;
+    state.swipeStartX = null;
+    state.swipeStartY = null;
+    state.swipePointerId = null;
+    if (state.viewerPointers.size === 0) {
+      state.viewerGestureHadMultiple = false;
+      state.viewerLastTap = null;
+    }
+  }
+
+  function onLightboxWheel(event) {
+    if (!isPhotoLightbox() || isViewerInteractiveTarget(event.target)) {
+      return;
+    }
+    event.preventDefault();
+    const nextZoom = state.viewerZoom * Math.exp(-event.deltaY * 0.0025);
+    zoomLightboxAroundPoint({ x: event.clientX, y: event.clientY }, nextZoom);
   }
 
   function shareMediaKey(photo = {}) {
@@ -2023,10 +2899,13 @@
     if (dom.lightboxRating) {
       dom.lightboxRating.replaceChildren(makeRatingControl(photo, 'viewer'));
     }
+    renderLightboxDeletionStatus(photo);
     dom.lightboxTitle.textContent = title;
     dom.lightboxPosition.textContent = `${state.lightboxIndex + 1} / ${state.items.length}`;
     resetLightboxMedia();
     dom.lightboxImageFrame.classList.toggle('is-video', isVideo);
+    dom.lightboxMedia.classList.toggle('is-photo', !isVideo);
+    dom.lightboxMedia.classList.toggle('is-video', isVideo);
 
     if (isVideo) {
       const streamUrl = normaliseAssetUrl(photo.stream_url);
@@ -2085,6 +2964,7 @@
         return;
       }
       renderExifRows(photo, payload);
+      renderLightboxDeletionStatus(findPhotoById(photo.id) || photo);
       setMessage(dom.lightboxLoading, '');
     } catch (error) {
       if (controller.signal.aborted || sequence !== state.lightboxSequence) {
@@ -2136,7 +3016,7 @@
     state.ratingFilterRefreshPending = false;
     if (!dom.lightbox.open && !dom.lightbox.hasAttribute('open')) {
       resetLightboxMedia();
-      if (shouldRefreshFilteredResults && hasActiveRatingFilter()) {
+      if (shouldRefreshFilteredResults && hasActiveMutationFilter()) {
         void refreshPhotosPreservingScroll();
       }
       return;
@@ -2157,7 +3037,7 @@
       state.previousFocus.focus({ preventScroll: true });
     }
     state.previousFocus = null;
-    if (shouldRefreshFilteredResults && hasActiveRatingFilter()) {
+    if (shouldRefreshFilteredResults && hasActiveMutationFilter()) {
       void refreshPhotosPreservingScroll();
     }
   }
@@ -2202,36 +3082,16 @@
     }
   }
 
-  function onLightboxPointerDown(event) {
-    if (event.isPrimary === false || event.target === dom.lightboxVideo || event.target?.closest?.('video,button,a,input,select,textarea')) {
-      state.swipeStartX = null;
-      return;
-    }
-    state.swipeStartX = event.clientX;
-  }
-
-  function onLightboxPointerUp(event) {
-    if (state.swipeStartX === null) {
-      return;
-    }
-    if (event.target === dom.lightboxVideo || event.target?.closest?.('video,button,a,input,select,textarea')) {
-      state.swipeStartX = null;
-      return;
-    }
-    const distance = event.clientX - state.swipeStartX;
-    state.swipeStartX = null;
-    if (Math.abs(distance) < 48) {
-      return;
-    }
-    navigateLightbox(distance < 0 ? 1 : -1);
-  }
-
   function onLightboxMediaLoaded(event) {
     if (event.currentTarget.hidden) {
       return;
     }
     setHidden(dom.lightboxImageLoader, true);
     dom.lightboxImageFrame.classList.remove('is-missing');
+    if (event.currentTarget === dom.lightboxImage && isPhotoLightbox()) {
+      captureLightboxImageBaseRect();
+      applyLightboxViewerTransform();
+    }
   }
 
   function onLightboxMediaError(event) {
@@ -2290,6 +3150,12 @@
   }
 
   function onViewportResize() {
+    if (isLightboxOpen()) {
+      resetViewerZoom();
+      if (isPhotoLightbox()) {
+        captureLightboxImageBaseRect();
+      }
+    }
     if (!dom.gallery || dom.gallery.hidden) {
       return;
     }
@@ -2310,13 +3176,26 @@
     dom.scanButton.addEventListener('click', triggerScan);
     dom.logoutButton.addEventListener('click', logout);
 
-    dom.searchInput.addEventListener('input', scheduleSearch);
+    if (dom.searchInput) {
+      dom.searchInput.addEventListener('input', scheduleSearch);
+    }
     dom.sortSelect.addEventListener('change', onFilterChanged);
     dom.mediaTypeSelect.addEventListener('change', onFilterChanged);
     dom.importedOnlyFilter.addEventListener('change', onFilterChanged);
     dom.filtersForm.addEventListener('change', onFilterChanged);
     dom.gridSize.addEventListener('input', updateGridSize);
     dom.loadMore.addEventListener('click', () => loadPhotos({ reset: false }));
+    dom.scheduleZeroButton.addEventListener('click', () => {
+      void prepareScheduleZeroConfirmation();
+    });
+    dom.scheduleZeroCancel.addEventListener('click', closeScheduleZeroDialog);
+    dom.scheduleZeroConfirm.addEventListener('click', () => {
+      void confirmScheduleZero();
+    });
+    dom.scheduleZeroDialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      closeScheduleZeroDialog();
+    });
     dom.uploadToggle.addEventListener('click', () => {
       setUploadExpanded(dom.uploadToggle.getAttribute('aria-expanded') !== 'true');
     });
@@ -2364,8 +3243,12 @@
     dom.lightboxVideo.addEventListener('loadedmetadata', onLightboxMediaLoaded);
     dom.lightboxVideo.addEventListener('canplay', onLightboxMediaLoaded);
     dom.lightboxVideo.addEventListener('error', onLightboxMediaError);
-    dom.lightboxImageFrame.addEventListener('pointerdown', onLightboxPointerDown);
-    dom.lightboxImageFrame.addEventListener('pointerup', onLightboxPointerUp);
+    dom.lightboxMedia.addEventListener('pointerdown', onLightboxPointerDown);
+    dom.lightboxMedia.addEventListener('pointermove', onLightboxPointerMove);
+    dom.lightboxMedia.addEventListener('pointerup', onLightboxPointerUp);
+    dom.lightboxMedia.addEventListener('pointercancel', onLightboxPointerCancel);
+    dom.lightboxMedia.addEventListener('wheel', onLightboxWheel, { passive: false });
+    dom.lightboxResetZoom.addEventListener('click', () => resetViewerZoom());
     dom.lightbox.addEventListener('cancel', (event) => {
       event.preventDefault();
       closeLightbox();

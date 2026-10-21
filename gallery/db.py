@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import calendar
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -73,6 +75,19 @@ class Database:
                     stored_path TEXT PRIMARY KEY,
                     original_name TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS deletion_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    media_id INTEGER NOT NULL,
+                    path_key TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('scheduled', 'cancelled', 'trashed', 'error')),
+                    original_name TEXT NOT NULL,
+                    scheduled_at TEXT NOT NULL,
+                    due_at TEXT NOT NULL,
+                    source_size INTEGER NOT NULL,
+                    source_mtime_ns INTEGER NOT NULL,
+                    trash_path TEXT,
+                    error TEXT
+                );
                 """
             )
             columns = {
@@ -89,32 +104,286 @@ class Database:
                     "ALTER TABLE photos ADD COLUMN rating INTEGER NOT NULL DEFAULT 0 "
                     "CHECK (rating BETWEEN 0 AND 4)"
                 )
+            deletion_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(deletion_jobs)").fetchall()
+            }
+            if "path_key" not in deletion_columns:
+                connection.execute("ALTER TABLE deletion_jobs ADD COLUMN path_key TEXT")
+            connection.execute(
+                """
+                UPDATE deletion_jobs
+                SET path_key = (
+                    SELECT path FROM photos WHERE photos.id = deletion_jobs.media_id
+                )
+                WHERE path_key IS NULL
+                """
+            )
             connection.execute("CREATE INDEX IF NOT EXISTS idx_photos_media_type ON photos(media_type)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_photos_rating ON photos(rating)")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_deletion_jobs_status_due "
+                "ON deletion_jobs(status, due_at)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_deletion_jobs_media_status "
+                "ON deletion_jobs(media_id, status)"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_deletion_jobs_one_scheduled "
+                "ON deletion_jobs(media_id) WHERE status = 'scheduled'"
+            )
 
     @staticmethod
     def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
+    @staticmethod
+    def _photo_select() -> str:
+        return """
+            SELECT p.*,
+                   (
+                       SELECT scheduled_at FROM deletion_jobs
+                       WHERE media_id = p.id AND status = 'scheduled'
+                       ORDER BY id DESC LIMIT 1
+                   ) AS deletion_scheduled_at,
+                   (
+                       SELECT due_at FROM deletion_jobs
+                       WHERE media_id = p.id AND status = 'scheduled'
+                       ORDER BY id DESC LIMIT 1
+                   ) AS delete_after,
+                   (
+                       SELECT status FROM deletion_jobs
+                       WHERE media_id = p.id AND status = 'scheduled'
+                       ORDER BY id DESC LIMIT 1
+                   ) AS deletion_status,
+                   EXISTS(
+                       SELECT 1 FROM deletion_jobs
+                       WHERE media_id = p.id AND status = 'trashed'
+                   ) AS is_trashed
+            FROM photos AS p
+        """
+
+    @staticmethod
+    def _utc_now(value: datetime | None = None) -> datetime:
+        current = value or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            raise ValueError("datetime must be timezone-aware")
+        return current.astimezone(timezone.utc)
+
+    @staticmethod
+    def _utc_iso(value: datetime) -> str:
+        return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    @staticmethod
+    def _calendar_month(value: datetime) -> datetime:
+        year = value.year + (1 if value.month == 12 else 0)
+        month = 1 if value.month == 12 else value.month + 1
+        day = min(value.day, calendar.monthrange(year, month)[1])
+        return value.replace(year=year, month=month, day=day)
+
     def get_photo(self, photo_id: int) -> dict[str, Any] | None:
         with self.connect() as connection:
-            return self._row(connection.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone())
+            return self._row(
+                connection.execute(
+                    f"{self._photo_select()} WHERE p.id = ?", (photo_id,)
+                ).fetchone()
+            )
 
     def get_photo_by_path(self, path: str) -> dict[str, Any] | None:
         with self.connect() as connection:
-            return self._row(connection.execute("SELECT * FROM photos WHERE path = ?", (path,)).fetchone())
+            return self._row(
+                connection.execute(
+                    f"{self._photo_select()} WHERE p.path = ?", (path,)
+                ).fetchone()
+            )
 
     def update_rating(self, photo_id: int, rating: int) -> dict[str, Any] | None:
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
-                "UPDATE photos SET rating = ? WHERE id = ?",
+                """
+                UPDATE photos
+                SET rating = ?
+                WHERE id = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM deletion_jobs
+                      WHERE media_id = photos.id AND status = 'trashed'
+                  )
+                """,
                 (rating, photo_id),
             )
             if cursor.rowcount != 1:
                 return None
+            if rating >= 1:
+                connection.execute(
+                    """
+                    UPDATE deletion_jobs
+                    SET status = 'cancelled', error = NULL
+                    WHERE media_id = ? AND status = 'scheduled'
+                    """,
+                    (photo_id,),
+                )
             return self._row(
-                connection.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
+                connection.execute(
+                    f"{self._photo_select()} WHERE p.id = ?", (photo_id,)
+                ).fetchone()
             )
+
+    def schedule_zero(self, *, now: datetime | None = None) -> dict[str, Any]:
+        scheduled_at = self._utc_now(now)
+        due_at = self._calendar_month(scheduled_at)
+        scheduled_iso = self._utc_iso(scheduled_at)
+        due_iso = self._utc_iso(due_at)
+        scheduled_count = 0
+        already_scheduled = 0
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT p.id, p.path, p.name, p.size, p.mtime_ns,
+                       EXISTS (
+                           SELECT 1 FROM deletion_jobs
+                           WHERE media_id = p.id AND status = 'scheduled'
+                       ) AS already_scheduled
+                FROM photos AS p
+                WHERE p.rating = 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM deletion_jobs
+                      WHERE media_id = p.id AND status = 'trashed'
+                  )
+                ORDER BY p.id
+                """
+            ).fetchall()
+            for row in rows:
+                if bool(row["already_scheduled"]):
+                    already_scheduled += 1
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO deletion_jobs(
+                        media_id, path_key, status, original_name, scheduled_at, due_at,
+                        source_size, source_mtime_ns, trash_path, error
+                    ) VALUES (?, ?, 'scheduled', ?, ?, ?, ?, ?, NULL, NULL)
+                    """,
+                    (
+                        int(row["id"]),
+                        str(row["path"]),
+                        str(row["name"]),
+                        scheduled_iso,
+                        due_iso,
+                        int(row["size"]),
+                        int(row["mtime_ns"]),
+                    ),
+                )
+                scheduled_count += 1
+            total_due = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM deletion_jobs AS j
+                    JOIN photos AS p ON p.id = j.media_id
+                    WHERE j.status = 'scheduled' AND p.rating = 0
+                    """
+                ).fetchone()[0]
+            )
+            response_due = due_iso
+            if scheduled_count == 0:
+                existing_due = connection.execute(
+                    """
+                    SELECT MIN(j.due_at)
+                    FROM deletion_jobs AS j
+                    JOIN photos AS p ON p.id = j.media_id
+                    WHERE j.status = 'scheduled' AND p.rating = 0
+                    """
+                ).fetchone()[0]
+                if existing_due:
+                    response_due = str(existing_due)
+        return {
+            "scheduled": scheduled_count,
+            "already_scheduled": already_scheduled,
+            "total_due": total_due,
+            "due_at": response_due,
+        }
+
+    def get_deletion_job(self, job_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            return self._row(
+                connection.execute(
+                    "SELECT * FROM deletion_jobs WHERE id = ?", (job_id,)
+                ).fetchone()
+            )
+
+    def get_deletion_job_for_media(self, media_id: int, *, status: str | None = None) -> dict[str, Any] | None:
+        query = "SELECT * FROM deletion_jobs WHERE media_id = ?"
+        params: list[Any] = [media_id]
+        if status is not None:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY id DESC LIMIT 1"
+        with self.connect() as connection:
+            return self._row(connection.execute(query, params).fetchone())
+
+    def cancel_deletion(self, media_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM photos WHERE id = ?", (media_id,)).fetchone() is None:
+                return None
+            connection.execute(
+                """
+                UPDATE deletion_jobs
+                SET status = 'cancelled', error = NULL
+                WHERE media_id = ? AND status = 'scheduled'
+                """,
+                (media_id,),
+            )
+            return self._row(
+                connection.execute(
+                    f"{self._photo_select()} WHERE p.id = ?", (media_id,)
+                ).fetchone()
+            )
+
+    def deletion_status(self) -> dict[str, int]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    COALESCE(SUM(status = 'scheduled'), 0),
+                    COALESCE(SUM(status = 'trashed'), 0)
+                FROM deletion_jobs
+                """
+            ).fetchone()
+        return {"scheduled": int(row[0]), "trashed": int(row[1])}
+
+    def list_trash_jobs(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, media_id, status, original_name, scheduled_at, due_at,
+                       trash_path, error
+                FROM deletion_jobs
+                WHERE status = 'trashed'
+                ORDER BY id DESC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def due_deletion_jobs(self, *, now: datetime | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        current_iso = self._utc_iso(self._utc_now(now))
+        bounded_limit = max(1, min(100, int(limit)))
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT j.*, COALESCE(p.path, j.path_key) AS source_path, p.rating AS current_rating
+                FROM deletion_jobs AS j
+                LEFT JOIN photos AS p ON p.id = j.media_id
+                WHERE j.status = 'scheduled' AND j.due_at <= ?
+                ORDER BY j.due_at ASC, j.id ASC
+                LIMIT ?
+                """,
+                (current_iso, bounded_limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def register_upload(self, stored_path: str, original_name: str) -> None:
         with self.connect() as connection:
@@ -191,15 +460,44 @@ class Database:
 
     def delete_path(self, path: str) -> None:
         with self.connect() as connection:
-            connection.execute("DELETE FROM photos WHERE path = ?", (path,))
+            connection.execute(
+                """
+                DELETE FROM photos
+                WHERE path = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM deletion_jobs
+                      WHERE media_id = photos.id AND status IN ('scheduled', 'trashed')
+                  )
+                """,
+                (path,),
+            )
 
     def reconcile(self, current_paths: Iterable[str]) -> None:
         paths = set(current_paths)
         with self.connect() as connection:
-            existing = [str(row[0]) for row in connection.execute("SELECT path FROM photos")]
-            stale = [path for path in existing if path not in paths]
-            if stale:
-                connection.executemany("DELETE FROM photos WHERE path = ?", ((path,) for path in stale))
+            if paths:
+                placeholders = ", ".join("?" for _ in paths)
+                connection.execute(
+                    f"""
+                    DELETE FROM photos
+                    WHERE path NOT IN ({placeholders})
+                      AND NOT EXISTS (
+                          SELECT 1 FROM deletion_jobs
+                          WHERE media_id = photos.id AND status IN ('scheduled', 'trashed')
+                      )
+                    """,
+                    list(paths),
+                )
+            else:
+                connection.execute(
+                    """
+                    DELETE FROM photos
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM deletion_jobs
+                        WHERE media_id = photos.id AND status IN ('scheduled', 'trashed')
+                    )
+                    """
+                )
             connection.execute(
                 "DELETE FROM upload_names WHERE stored_path NOT IN (SELECT path FROM photos)"
             )
@@ -219,8 +517,12 @@ class Database:
         iso_max: float | None = None,
         rating: int | None = None,
         rating_min: int | None = None,
+        deletion_status: str | None = None,
     ) -> tuple[list[str], list[Any]]:
-        clauses = ["1 = 1"]
+        clauses = [
+            "1 = 1",
+            "NOT EXISTS (SELECT 1 FROM deletion_jobs WHERE media_id = p.id AND status = 'trashed')",
+        ]
         params: list[Any] = []
         if q:
             query = f"%{q.lower()}%"
@@ -242,7 +544,7 @@ class Database:
             params.append(media_type)
         if imported_only:
             clauses.append(
-                "EXISTS (SELECT 1 FROM upload_names WHERE upload_names.stored_path = photos.path)"
+                "EXISTS (SELECT 1 FROM upload_names WHERE upload_names.stored_path = p.path)"
             )
         if date_from:
             clauses.append("substr(date, 1, 10) >= ?")
@@ -262,6 +564,12 @@ class Database:
         if rating_min is not None:
             clauses.append("rating >= ?")
             params.append(rating_min)
+        if deletion_status is not None:
+            if deletion_status != "scheduled":
+                raise ValueError("invalid deletion status")
+            clauses.append(
+                "EXISTS (SELECT 1 FROM deletion_jobs WHERE media_id = p.id AND status = 'scheduled')"
+            )
         return clauses, params
 
     def list_photos(
@@ -279,6 +587,7 @@ class Database:
         iso_max: float | None = None,
         rating: int | None = None,
         rating_min: int | None = None,
+        deletion_status: str | None = None,
         sort: str = "date_desc",
         offset: int = 0,
         limit: int = 60,
@@ -296,13 +605,16 @@ class Database:
             iso_max=iso_max,
             rating=rating,
             rating_min=rating_min,
+            deletion_status=deletion_status,
         )
         where = " AND ".join(clauses)
         order = SORT_SQL[sort]
         with self.connect() as connection:
-            total = int(connection.execute(f"SELECT COUNT(*) FROM photos WHERE {where}", params).fetchone()[0])
+            total = int(
+                connection.execute(f"SELECT COUNT(*) FROM photos AS p WHERE {where}", params).fetchone()[0]
+            )
             rows = connection.execute(
-                f"SELECT * FROM photos WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                f"{self._photo_select()} WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
                 [*params, limit, offset],
             ).fetchall()
         return [dict(row) for row in rows], total
@@ -315,7 +627,16 @@ class Database:
                 result[output_keys[key]] = [
                     str(row[0])
                     for row in connection.execute(
-                        f"SELECT DISTINCT {key} FROM photos WHERE {key} IS NOT NULL AND {key} != '' ORDER BY {key} COLLATE NOCASE"
+                        f"""
+                        SELECT DISTINCT p.{key}
+                        FROM photos AS p
+                        WHERE p.{key} IS NOT NULL AND p.{key} != ''
+                          AND NOT EXISTS (
+                              SELECT 1 FROM deletion_jobs
+                              WHERE media_id = p.id AND status = 'trashed'
+                          )
+                        ORDER BY p.{key} COLLATE NOCASE
+                        """
                     )
                 ]
         return result
