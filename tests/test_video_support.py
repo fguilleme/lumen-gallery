@@ -79,11 +79,13 @@ def make_client(tmp_path: Path, source: Path) -> TestClient:
 
 
 def wait_for_scan(client: TestClient) -> dict:
-    for _ in range(100):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
         status = client.get("/api/status").json()
         if not status["running"]:
             return status
-    raise AssertionError("scan did not finish")
+        time.sleep(0.01)
+    raise AssertionError("scan did not finish within 10 seconds")
 
 
 def fake_photo_metadata(path: Path, *, name: str | None = None) -> dict:

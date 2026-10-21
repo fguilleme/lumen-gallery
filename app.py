@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictInt
 
 from gallery.config import Settings
 from gallery.db import SORT_SQL, Database
@@ -30,6 +30,10 @@ SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 
 class LoginPayload(BaseModel):
     password: str
+
+
+class RatingPayload(BaseModel):
+    rating: StrictInt = Field(ge=0, le=4)
 
 
 def _sign_session(secret: str, expiry: int, nonce: str) -> str:
@@ -123,6 +127,7 @@ def _item(row: dict[str, Any]) -> dict[str, Any]:
         "format": str(row["format"]),
         "media_type": media_type,
         "duration": row.get("duration"),
+        "rating": int(row["rating"]),
         "date": str(row["date"]),
         "camera": str(row["camera"]),
         "lens": str(row["lens"]),
@@ -334,6 +339,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         date_to: str | None = None,
         iso_min: float | None = None,
         iso_max: float | None = None,
+        rating: int | None = Query(None, ge=0, le=4),
+        rating_min: int | None = Query(None, ge=0, le=4),
         sort: str = Query("date_desc"),
         offset: int = Query(0, ge=0),
         limit: int = Query(60, ge=1, le=200),
@@ -352,6 +359,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             date_to=date_to,
             iso_min=iso_min,
             iso_max=iso_max,
+            rating=rating,
+            rating_min=rating_min,
             sort=sort,
             offset=offset,
             limit=limit,
@@ -378,6 +387,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         result = _item(row)
         result["exif"] = exif
         return result
+
+    @app.patch("/api/photos/{photo_id}/rating", dependencies=[Depends(_check_state_change)])
+    def update_photo_rating(
+        photo_id: int,
+        payload: RatingPayload,
+        _: None = Depends(require_session),
+    ) -> dict[str, Any]:
+        row = database.update_rating(photo_id, payload.rating)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        return _item(row)
 
     @app.get("/api/photos/{photo_id}/thumb")
     def thumbnail(photo_id: int, _: None = Depends(require_session)) -> FileResponse:

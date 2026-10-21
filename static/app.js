@@ -9,6 +9,8 @@
     'iso_desc',
     'aperture_asc',
     'focal_asc',
+    'rating_asc',
+    'rating_desc',
   ]);
 
   const MEDIA_TYPES = new Set(['photo', 'video']);
@@ -16,6 +18,7 @@
   const QUERY_FIELDS = [
     ['mediaType', 'media_type'],
     ['importedOnly', 'imported_only'],
+    ['rating', 'rating'],
     ['q', 'q'],
     ['camera', 'camera'],
     ['lens', 'lens'],
@@ -28,6 +31,110 @@
 
   function isPresent(value) {
     return value !== undefined && value !== null && value !== '';
+  }
+
+  function normaliseRating(value) {
+    const number = typeof value === 'string' && value.trim() === '' ? NaN : Number(value);
+    return Number.isInteger(number) && number >= 0 && number <= 4 ? number : 0;
+  }
+
+  function isRatingFilterValue(value) {
+    if (!isPresent(value)) {
+      return false;
+    }
+    const number = Number(value);
+    return Number.isInteger(number) && number >= 0 && number <= 4;
+  }
+
+  function ratingValueFromPayload(payload, fallback) {
+    const item = payload && typeof payload === 'object' && payload.item && typeof payload.item === 'object'
+      ? payload.item
+      : payload;
+    if (item && Object.prototype.hasOwnProperty.call(item, 'rating') && isRatingFilterValue(item.rating)) {
+      return normaliseRating(item.rating);
+    }
+    return normaliseRating(fallback);
+  }
+
+  function createRatingQueue(send, { onSettled = () => {} } = {}) {
+    if (typeof send !== 'function') {
+      throw new TypeError('createRatingQueue requires a send function');
+    }
+    const entries = new Map();
+
+    function entryFor(id) {
+      const key = String(id);
+      let entry = entries.get(key);
+      if (!entry) {
+        entry = {
+          id: key,
+          pending: null,
+          inFlight: null,
+          sequence: 0,
+          serverRating: 0,
+        };
+        entries.set(key, entry);
+      }
+      return entry;
+    }
+
+    function notify(event) {
+      try {
+        onSettled(event);
+      } catch {
+        // A UI callback must never break per-id persistence.
+      }
+    }
+
+    async function drain(entry) {
+      while (entry.pending) {
+        const request = entry.pending;
+        entry.pending = null;
+        entry.inFlight = request;
+        try {
+          const response = await send(entry.id, request.rating);
+          const serverRating = ratingValueFromPayload(response, request.rating);
+          entry.serverRating = serverRating;
+          notify({
+            id: entry.id,
+            requestedRating: request.rating,
+            serverRating,
+            response,
+            error: null,
+            latest: entry.pending === null && entry.sequence === request.sequence,
+          });
+        } catch (error) {
+          notify({
+            id: entry.id,
+            requestedRating: request.rating,
+            serverRating: entry.serverRating,
+            response: null,
+            error,
+            latest: entry.pending === null && entry.sequence === request.sequence,
+          });
+        } finally {
+          entry.inFlight = null;
+        }
+      }
+    }
+
+    return {
+      enqueue(id, rating) {
+        const entry = entryFor(id);
+        entry.sequence += 1;
+        entry.pending = { rating: normaliseRating(rating), sequence: entry.sequence };
+        if (!entry.inFlight) {
+          void drain(entry);
+        }
+        return entry.sequence;
+      },
+      seed(id, rating) {
+        const entry = entryFor(id);
+        if (entry.sequence === 0 && !entry.inFlight && !entry.pending) {
+          entry.serverRating = normaliseRating(rating);
+        }
+      },
+    };
   }
 
   function mediaTypeOf(item = {}) {
@@ -57,6 +164,12 @@
       if (target === 'imported_only') {
         if (value === true) {
           pairs.push('imported_only=true');
+        }
+        continue;
+      }
+      if (target === 'rating') {
+        if (isRatingFilterValue(value)) {
+          pairs.push(`rating=${encodeURIComponent(String(normaliseRating(value)))}`);
         }
         continue;
       }
@@ -385,6 +498,8 @@
 
   const helpers = {
     buildPhotoQuery,
+    normaliseRating,
+    createRatingQueue,
     formatBytes,
     formatDuration,
     formatUploadSelection,
@@ -450,6 +565,8 @@
     swipeStartX: null,
     galleryLayoutFrame: null,
     galleryLayoutWidth: null,
+    ratingQueue: null,
+    ratingFilterRefreshPending: false,
   };
 
   const dom = {
@@ -479,6 +596,7 @@
     sortSelect: document.getElementById('sort-select'),
     mediaTypeSelect: document.getElementById('media-type-filter'),
     importedOnlyFilter: document.getElementById('imported-only-filter'),
+    ratingFilter: document.getElementById('rating-filter'),
     gridSize: document.getElementById('grid-size'),
     gridSizeValue: document.getElementById('grid-size-value'),
     filtersForm: document.getElementById('filters-form'),
@@ -506,6 +624,7 @@
     lightboxVideo: document.getElementById('lightbox-video'),
     lightboxImageLoader: document.getElementById('lightbox-image-loader'),
     lightboxImageFrame: document.getElementById('lightbox-image-frame'),
+    lightboxRating: document.getElementById('lightbox-rating'),
     lightboxShare: document.getElementById('lightbox-share'),
     lightboxSharePreview: document.getElementById('lightbox-share-preview'),
     lightboxExif: document.getElementById('lightbox-exif-list'),
@@ -651,14 +770,24 @@
       sort: dom.sortSelect.value,
       mediaType: dom.mediaTypeSelect.value,
       importedOnly: dom.importedOnlyFilter.checked,
+      rating: dom.ratingFilter.value,
       offset: state.offset,
       limit: PAGE_SIZE,
     };
   }
 
+  function photoRating(photo = {}) {
+    return normaliseRating(photo?.rating);
+  }
+
+  function withNormalisedRating(photo = {}) {
+    return { ...photo, rating: photoRating(photo) };
+  }
+
   function clearFiltersForImportedOnly() {
     dom.searchInput.value = '';
     dom.mediaTypeSelect.value = '';
+    dom.ratingFilter.value = '';
     dom.cameraSelect.value = '';
     dom.lensSelect.value = '';
     dom.formatSelect.value = '';
@@ -678,6 +807,10 @@
     const params = new URLSearchParams(window.location.search);
     if (params.get('imported_only') === 'true') {
       selectImportedOnly();
+      return;
+    }
+    if (isRatingFilterValue(params.get('rating'))) {
+      dom.ratingFilter.value = String(normaliseRating(params.get('rating')));
     }
   }
 
@@ -685,6 +818,7 @@
     const values = [
       dom.mediaTypeSelect.value,
       dom.importedOnlyFilter.checked ? 'true' : '',
+      dom.ratingFilter.value,
       dom.cameraSelect.value,
       dom.lensSelect.value,
       dom.formatSelect.value,
@@ -788,7 +922,203 @@
     parent.append(metadata);
   }
 
+  function ratingDescription(rating) {
+    return rating === 1 ? '1 étoile' : `${rating} étoiles`;
+  }
+
+  function setRatingControlState(control, rating, { pending = false } = {}) {
+    if (!control) {
+      return;
+    }
+    const value = normaliseRating(rating);
+    control.dataset.rating = String(value);
+    control.setAttribute(
+      'aria-label',
+      `Note : ${ratingDescription(value)} sur 4. Suppr. ou Retour arrière pour effacer.`,
+    );
+    control.setAttribute('aria-keyshortcuts', 'Delete Backspace');
+    control.classList.toggle('is-pending', pending);
+    if (pending) {
+      control.setAttribute('aria-busy', 'true');
+    } else {
+      control.removeAttribute('aria-busy');
+    }
+    control.querySelectorAll('button[data-rating-value]').forEach((button) => {
+      const starValue = Number(button.dataset.ratingValue);
+      const selected = starValue <= value;
+      button.classList.toggle('is-filled', selected);
+      button.setAttribute('aria-pressed', String(selected));
+      button.setAttribute(
+        'aria-label',
+        starValue === value && value > 0
+          ? `Effacer la note de ${ratingDescription(value)}`
+          : `Noter ${ratingDescription(starValue)}`,
+      );
+    });
+  }
+
+  function setRatingControlError(control, message = '') {
+    const error = control?.querySelector('.rating-control__error');
+    if (!error) {
+      return;
+    }
+    error.textContent = message;
+    setHidden(error, !message);
+  }
+
+  function ratingControlsForId(id) {
+    return [...document.querySelectorAll('.rating-control')]
+      .filter((control) => control.dataset.photoId === String(id));
+  }
+
+  function findPhotoById(id) {
+    return state.items.find((item) => String(item.id) === String(id)) || null;
+  }
+
+  function ratingPayloadItem(payload) {
+    if (payload && typeof payload === 'object' && payload.item && typeof payload.item === 'object') {
+      return payload.item;
+    }
+    return payload && typeof payload === 'object' ? payload : null;
+  }
+
+  function mergeRatingResponse(id, payload, rating) {
+    const index = state.items.findIndex((item) => String(item.id) === String(id));
+    if (index < 0) {
+      return;
+    }
+    const current = state.items[index];
+    const incoming = ratingPayloadItem(payload);
+    const matchingIncoming = incoming && incoming.id !== undefined
+      && String(incoming.id) === String(id)
+      ? incoming
+      : null;
+    state.items[index] = {
+      ...current,
+      ...(matchingIncoming || {}),
+      rating: normaliseRating(rating),
+    };
+  }
+
+  function applyRatingToUi(id, rating, { pending = false, error = '' } = {}) {
+    const value = normaliseRating(rating);
+    const photo = findPhotoById(id);
+    if (photo) {
+      photo.rating = value;
+    }
+    ratingControlsForId(id).forEach((control) => {
+      setRatingControlState(control, value, { pending });
+      setRatingControlError(control, error);
+    });
+  }
+
+  function isLightboxOpen() {
+    return Boolean(dom.lightbox?.open || dom.lightbox?.hasAttribute('open'));
+  }
+
+  function hasActiveRatingFilter() {
+    return isRatingFilterValue(dom.ratingFilter?.value);
+  }
+
+  function persistRating(id, rating) {
+    return fetchJson(`/api/photos/${encodeURIComponent(String(id))}/rating`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rating: normaliseRating(rating) }),
+    });
+  }
+
+  function handleRatingMutationSettled(event) {
+    const id = String(event.id);
+    const optimisticRating = photoRating(findPhotoById(id) || {});
+    const effectiveRating = event.latest ? event.serverRating : optimisticRating;
+    mergeRatingResponse(id, event.response, effectiveRating);
+
+    if (!event.latest) {
+      ratingControlsForId(id).forEach((control) => {
+        setRatingControlState(control, effectiveRating, { pending: true });
+      });
+      return;
+    }
+
+    if (event.error) {
+      const message = `La note n’a pas pu être enregistrée. ${displayErrorMessage(event.error, 'Réessayez.')}`;
+      applyRatingToUi(id, event.serverRating, { error: message });
+      return;
+    }
+
+    applyRatingToUi(id, event.serverRating);
+    if (hasActiveRatingFilter()) {
+      if (isLightboxOpen()) {
+        state.ratingFilterRefreshPending = true;
+      } else {
+        void refreshPhotosPreservingScroll();
+      }
+    }
+  }
+
+  function ensureRatingQueue() {
+    if (!state.ratingQueue) {
+      state.ratingQueue = createRatingQueue(persistRating, { onSettled: handleRatingMutationSettled });
+    }
+    return state.ratingQueue;
+  }
+
+  function requestPhotoRating(id, rating) {
+    const key = String(id);
+    const photo = findPhotoById(key);
+    if (!photo) {
+      return;
+    }
+    const value = normaliseRating(rating);
+    const queue = ensureRatingQueue();
+    queue.seed(key, photoRating(photo));
+    setRatingControlErrorForId(key, '');
+    applyRatingToUi(key, value, { pending: true });
+    queue.enqueue(key, value);
+  }
+
+  function setRatingControlErrorForId(id, message = '') {
+    ratingControlsForId(id).forEach((control) => setRatingControlError(control, message));
+  }
+
+  function makeRatingControl(photo, placement) {
+    const id = photo.id === undefined || photo.id === null ? '' : String(photo.id);
+    const control = textElement('div', `rating-control rating-control--${placement}`);
+    control.dataset.photoId = id;
+    control.dataset.ratingTarget = placement;
+    control.setAttribute('role', 'group');
+    control.tabIndex = 0;
+    control.addEventListener('keydown', (event) => {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      requestPhotoRating(id, 0);
+    });
+    for (let value = 1; value <= 4; value += 1) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'rating-control__star';
+      button.dataset.ratingValue = String(value);
+      button.setAttribute('aria-pressed', 'false');
+      button.innerHTML = '<span aria-hidden="true">☆</span>';
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const current = photoRating(findPhotoById(id) || photo);
+        requestPhotoRating(id, value === current ? 0 : value);
+      });
+      control.append(button);
+    }
+    control.append(textElement('span', 'rating-control__error', ''));
+    setRatingControlState(control, photoRating(photo));
+    setRatingControlError(control, '');
+    return control;
+  }
+
   function makePhotoCard(photo, index) {
+    photo = withNormalisedRating(photo);
     const mediaType = mediaTypeOf(photo);
     const isVideo = mediaType === 'video';
     const card = textElement('article', `photo-card${isVideo ? ' photo-card--video' : ''}`);
@@ -848,7 +1178,9 @@
     overlay.append(textElement('span', 'photo-card__open-hint', 'Voir'));
     frame.append(overlay);
     button.append(frame);
-    card.append(button);
+    const media = textElement('div', 'photo-card__media');
+    media.append(button, makeRatingControl(photo, 'card'));
+    card.append(media);
 
     const footer = textElement('div', 'photo-card__footer');
     const caption = textElement('div', 'photo-card__caption');
@@ -882,19 +1214,24 @@
     updateResultsMeta();
   }
 
-  async function loadPhotos({ reset = true } = {}) {
+  async function loadPhotos({ reset = true, preserveViewport = false } = {}) {
     if (state.photosRequest) {
       state.photosRequest.abort();
     }
     const controller = new AbortController();
     state.photosRequest = controller;
     const sequence = ++state.photosSequence;
+    const preservedScroll = preserveViewport
+      ? { left: window.scrollX, top: window.scrollY }
+      : null;
     if (reset) {
       state.offset = 0;
-      state.items = [];
-      state.total = null;
-      showGalleryState('loading');
-      updateResultsMeta();
+      if (!preserveViewport) {
+        state.items = [];
+        state.total = null;
+        showGalleryState('loading');
+        updateResultsMeta();
+      }
     }
 
     try {
@@ -903,7 +1240,9 @@
       if (sequence !== state.photosSequence || controller.signal.aborted) {
         return;
       }
-      const incoming = Array.isArray(payload?.items) ? payload.items : [];
+      const incoming = Array.isArray(payload?.items)
+        ? payload.items.map(withNormalisedRating)
+        : [];
       const reportedTotal = finiteNumber(payload?.total);
       const requestedMediaType = currentFilters().mediaType;
       const mediaContractAvailable = hasMediaTypeContract(incoming);
@@ -925,13 +1264,20 @@
       state.offset = state.items.length;
       state.hasMore = incoming.length >= PAGE_SIZE;
       renderGallery({ reset });
+      if (preservedScroll) {
+        window.scrollTo(preservedScroll.left, preservedScroll.top);
+        window.requestAnimationFrame(() => window.scrollTo(preservedScroll.left, preservedScroll.top));
+      }
     } catch (error) {
       if (controller.signal.aborted || sequence !== state.photosSequence) {
         return;
       }
-      if (reset) {
+      if (reset && !preserveViewport) {
         state.items = [];
         state.total = null;
+      } else if (preserveViewport) {
+        setMessage(dom.scanStatus, displayErrorMessage(error, 'Les résultats n’ont pas pu être actualisés.'), 'error');
+        return;
       }
       renderGalleryError(displayErrorMessage(error, 'Les médias ne peuvent pas être chargés pour le moment.'));
     } finally {
@@ -1120,6 +1466,10 @@
       loadPhotos({ reset: true }),
       loadFacets(),
     ]);
+  }
+
+  async function refreshPhotosPreservingScroll() {
+    await loadPhotos({ reset: true, preserveViewport: true });
   }
 
   async function triggerScan() {
@@ -1670,6 +2020,9 @@
     const width = finiteNumber(photo.width);
     const height = finiteNumber(photo.height);
     configureLightboxShare(photo);
+    if (dom.lightboxRating) {
+      dom.lightboxRating.replaceChildren(makeRatingControl(photo, 'viewer'));
+    }
     dom.lightboxTitle.textContent = title;
     dom.lightboxPosition.textContent = `${state.lightboxIndex + 1} / ${state.items.length}`;
     resetLightboxMedia();
@@ -1779,8 +2132,13 @@
 
   function closeLightbox() {
     resetLightboxShare();
+    const shouldRefreshFilteredResults = state.ratingFilterRefreshPending;
+    state.ratingFilterRefreshPending = false;
     if (!dom.lightbox.open && !dom.lightbox.hasAttribute('open')) {
       resetLightboxMedia();
+      if (shouldRefreshFilteredResults && hasActiveRatingFilter()) {
+        void refreshPhotosPreservingScroll();
+      }
       return;
     }
     if (state.lightboxRequest) {
@@ -1799,6 +2157,9 @@
       state.previousFocus.focus({ preventScroll: true });
     }
     state.previousFocus = null;
+    if (shouldRefreshFilteredResults && hasActiveRatingFilter()) {
+      void refreshPhotosPreservingScroll();
+    }
   }
 
   function onLightboxKeydown(event) {

@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 
 SORT_SQL = {
     "date_desc": "date DESC, name COLLATE NOCASE ASC, id ASC",
     "date_asc": "date ASC, name COLLATE NOCASE ASC, id ASC",
+    "rating_desc": "rating DESC, date DESC, id ASC",
+    "rating_asc": "rating ASC, date ASC, id ASC",
     "name_asc": "name COLLATE NOCASE ASC, id ASC",
     "iso_asc": "(iso IS NULL) ASC, iso ASC, name COLLATE NOCASE ASC, id ASC",
     "iso_desc": "(iso IS NULL) ASC, iso DESC, name COLLATE NOCASE ASC, id ASC",
@@ -23,12 +26,17 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
-    def connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 30000")
-        connection.execute("PRAGMA journal_mode = WAL")
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout = 30000")
+            connection.execute("PRAGMA journal_mode = WAL")
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def initialize(self) -> None:
         with self.connect() as connection:
@@ -54,7 +62,8 @@ class Database:
                     mtime_ns INTEGER NOT NULL,
                     exif_json TEXT NOT NULL DEFAULT '{}',
                     media_type TEXT NOT NULL DEFAULT 'photo',
-                    duration REAL
+                    duration REAL,
+                    rating INTEGER NOT NULL DEFAULT 0 CHECK (rating BETWEEN 0 AND 4)
                 );
                 CREATE INDEX IF NOT EXISTS idx_photos_date ON photos(date);
                 CREATE INDEX IF NOT EXISTS idx_photos_camera ON photos(camera);
@@ -75,7 +84,13 @@ class Database:
                 )
             if "duration" not in columns:
                 connection.execute("ALTER TABLE photos ADD COLUMN duration REAL")
+            if "rating" not in columns:
+                connection.execute(
+                    "ALTER TABLE photos ADD COLUMN rating INTEGER NOT NULL DEFAULT 0 "
+                    "CHECK (rating BETWEEN 0 AND 4)"
+                )
             connection.execute("CREATE INDEX IF NOT EXISTS idx_photos_media_type ON photos(media_type)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_photos_rating ON photos(rating)")
 
     @staticmethod
     def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -88,6 +103,18 @@ class Database:
     def get_photo_by_path(self, path: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             return self._row(connection.execute("SELECT * FROM photos WHERE path = ?", (path,)).fetchone())
+
+    def update_rating(self, photo_id: int, rating: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE photos SET rating = ? WHERE id = ?",
+                (rating, photo_id),
+            )
+            if cursor.rowcount != 1:
+                return None
+            return self._row(
+                connection.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
+            )
 
     def register_upload(self, stored_path: str, original_name: str) -> None:
         with self.connect() as connection:
@@ -190,6 +217,8 @@ class Database:
         date_to: str | None = None,
         iso_min: float | None = None,
         iso_max: float | None = None,
+        rating: int | None = None,
+        rating_min: int | None = None,
     ) -> tuple[list[str], list[Any]]:
         clauses = ["1 = 1"]
         params: list[Any] = []
@@ -227,6 +256,12 @@ class Database:
         if iso_max is not None:
             clauses.append("iso <= ?")
             params.append(iso_max)
+        if rating is not None:
+            clauses.append("rating = ?")
+            params.append(rating)
+        if rating_min is not None:
+            clauses.append("rating >= ?")
+            params.append(rating_min)
         return clauses, params
 
     def list_photos(
@@ -242,6 +277,8 @@ class Database:
         date_to: str | None = None,
         iso_min: float | None = None,
         iso_max: float | None = None,
+        rating: int | None = None,
+        rating_min: int | None = None,
         sort: str = "date_desc",
         offset: int = 0,
         limit: int = 60,
@@ -257,6 +294,8 @@ class Database:
             date_to=date_to,
             iso_min=iso_min,
             iso_max=iso_max,
+            rating=rating,
+            rating_min=rating_min,
         )
         where = " AND ".join(clauses)
         order = SORT_SQL[sort]

@@ -1004,6 +1004,11 @@ select option {
   animation: card-in 450ms both ease;
 }
 
+.photo-card__media {
+  position: relative;
+  min-width: 0;
+}
+
 .photo-card__open {
   display: block;
   width: 100%;
@@ -1057,11 +1062,11 @@ select option {
 .photo-card__play {
   position: absolute;
   z-index: 2;
-  top: 0.7rem;
-  left: 0.7rem;
+  top: 0.35rem;
+  left: 0.35rem;
   display: grid;
-  width: 2rem;
-  height: 2rem;
+  width: 1.8rem;
+  height: 1.8rem;
   place-items: center;
   border: 1px solid rgba(241, 234, 220, 0.5);
   border-radius: 50%;
@@ -1129,6 +1134,94 @@ select option {
   font-family: var(--serif);
   font-size: 0.95rem;
   font-style: italic;
+}
+
+.rating-control {
+  position: relative;
+  display: inline-flex;
+  width: max-content;
+  max-width: 100%;
+  align-items: center;
+  border: 1px solid rgba(241, 234, 220, 0.26);
+  background: rgba(11, 12, 13, 0.82);
+  box-shadow: 0 0.35rem 0.8rem rgba(0, 0, 0, 0.28);
+  color: var(--ivory-soft);
+  isolation: isolate;
+  transition: border-color 160ms ease, opacity 160ms ease;
+}
+
+.rating-control.is-pending {
+  border-color: rgba(221, 189, 128, 0.72);
+}
+
+.rating-control--card {
+  position: absolute;
+  z-index: 5;
+  right: 0.45rem;
+  bottom: 0.45rem;
+}
+
+.rating-control__star {
+  display: grid;
+  width: 34px;
+  min-width: 34px;
+  height: 40px;
+  min-height: 40px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgba(241, 234, 220, 0.75);
+  font-size: 1.62rem;
+  line-height: 1;
+  touch-action: manipulation;
+  transition: color 140ms ease, transform 140ms ease;
+}
+
+.rating-control__star.is-filled {
+  color: var(--ochre-soft);
+}
+
+.rating-control__star:hover,
+.rating-control__star:focus-visible {
+  color: var(--ivory);
+  transform: translateY(-1px);
+}
+
+.rating-control__star.is-filled:hover,
+.rating-control__star.is-filled:focus-visible {
+  color: var(--ochre-soft);
+}
+
+.rating-control__error {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  z-index: 8;
+  width: max-content;
+  max-width: min(19rem, 72vw);
+  padding: 0.35rem 0.5rem;
+  border: 1px solid rgba(215, 141, 125, 0.5);
+  background: #171a1b;
+  color: var(--danger);
+  font-size: 0.65rem;
+  line-height: 1.3;
+  white-space: normal;
+}
+
+.lightbox-rating {
+  position: absolute;
+  z-index: 3;
+  top: 0.75rem;
+  left: 50%;
+  display: flex;
+  max-width: calc(100% - 7rem);
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.lightbox-rating .rating-control {
+  pointer-events: auto;
 }
 
 .photo-card__footer {
@@ -2060,6 +2153,11 @@ select option {
 
   .photo-card__frame {
     min-height: 5.5rem;
+  }
+
+  .rating-control__star {
+    width: 32px;
+    min-width: 32px;
   }
 
   .photo-card__name {

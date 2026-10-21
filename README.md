@@ -17,7 +17,7 @@ Galerie responsive en français pour photographes : planche-contact, visionneuse
 
 ## Features
 
-Filtres : recherche (nom/dossier/boîtier/objectif), type photo/vidéo, boîtier, objectif, format, période de prise de vue, plage ISO. Tri : date croissante/décroissante, nom, ISO, ouverture et focale. Import optionnel depuis le navigateur ; les fichiers importés sont stockés dans data/uploads, jamais dans le dossier source.
+Filtres : recherche (nom/dossier/boîtier/objectif), type photo/vidéo, boîtier, objectif, format, période de prise de vue, plage ISO et note exacte ou minimale (0 à 4). Tri : date croissante/décroissante, nom, ISO, ouverture, focale et note. Les notes sont partagées dans cette galerie privée et persistées dans SQLite ; elles ne modifient jamais les originaux et n’ajoutent pas de métadonnées EXIF. Import optionnel depuis le navigateur ; les fichiers importés sont stockés dans data/uploads, jamais dans le dossier source.
 
 RAW : extraction JpgFromRaw, puis PreviewImage ; les fichiers sans aperçu JPEG exploitable sont signalés comme erreurs de scan. Aucun dématriçage RAW. Miniatures limitées à 480 px et aperçus à 2048 px ; téléchargement = fichier original intégral.
 
@@ -48,6 +48,7 @@ The backend reads these environment variables:
 - `PHOTO_MAX_UPLOAD_BYTES`: per-file upload limit; defaults to 250 MiB.
 - `PHOTO_FFMPEG`: optional path to the FFmpeg executable; defaults to `ffmpeg` on `PATH`.
 - `PHOTO_FFPROBE`: optional path to the FFprobe executable; defaults to `ffprobe` on `PATH`.
+- Les notes persistantes utilisent la colonne SQLite `photos.rating` (0 à 4) via `PATCH /api/photos/{id}/rating` ; aucun fichier annexe ni réglage supplémentaire n’est requis.
 
 For the deployment source supplied by the parent worker:
 

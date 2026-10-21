@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#101112">
     <meta name="description" content="LUMEN — archive de médias privée.">
     <title>LUMEN · Archive de médias</title>
-    <link rel="stylesheet" href="/static/style.css?v=20261021-share1">
+    <link rel="stylesheet" href="/static/style.css?v=20261021-ratings1">
   </head>
   <body>
     <a class="skip-link" href="#main-content">Aller au contenu</a>
@@ -93,6 +93,8 @@
                   <option value="iso_desc">ISO décroissant</option>
                   <option value="aperture_asc">Ouverture croissante</option>
                   <option value="focal_asc">Focale croissante</option>
+                  <option value="rating_desc">Note décroissante</option>
+                  <option value="rating_asc">Note croissante</option>
                 </select>
               </label>
               <label class="media-type-field sort-field" for="media-type-filter">
@@ -137,6 +139,17 @@
                     <span>Format</span>
                     <select id="format-filter">
                       <option value="">Tous les formats</option>
+                    </select>
+                  </label>
+                  <label for="rating-filter">
+                    <span>Note</span>
+                    <select id="rating-filter">
+                      <option value="">Toutes</option>
+                      <option value="0">0 étoile</option>
+                      <option value="1">1 étoile</option>
+                      <option value="2">2 étoiles</option>
+                      <option value="3">3 étoiles</option>
+                      <option value="4">4 étoiles</option>
                     </select>
                   </label>
                   <label for="date-from">
@@ -260,6 +273,7 @@
               <img id="lightbox-image" alt="" decoding="async">
               <video id="lightbox-video" controls playsinline preload="metadata" hidden></video>
             </div>
+            <div id="lightbox-rating" class="lightbox-rating" aria-label="Note du média"></div>
             <button id="lightbox-next" class="lightbox-nav lightbox-nav--next" type="button" aria-label="Média suivant">›</button>
           </div>
           <aside class="lightbox-aside" aria-label="Informations du média">
@@ -287,6 +301,6 @@
     <noscript>
       <div class="noscript-note">LUMEN a besoin de JavaScript pour afficher votre archive.</div>
     </noscript>
-    <script src="/static/app.js?v=20261021-share1"></script>
+    <script src="/static/app.js?v=20261021-ratings1"></script>
   </body>
 </html>
