@@ -317,6 +317,72 @@
     }
   }
 
+  const RAW_FORMATS = new Set([
+    'ARW',
+    'CR2',
+    'CR3',
+    'DNG',
+    'ERF',
+    'NEF',
+    'ORF',
+    'RAF',
+    'RAW',
+    'RW2',
+    'SRW',
+    'X3F',
+  ]);
+
+  function cleanShareFilename(value) {
+    if (typeof value !== 'string') {
+      return '';
+    }
+    const unquoted = value.trim().replace(/^['"]|['"]$/g, '');
+    if (!unquoted) {
+      return '';
+    }
+    try {
+      return decodeURIComponent(unquoted);
+    } catch {
+      return unquoted;
+    }
+  }
+
+  function shareFileName(photo = {}, contentDisposition = '', sourceUrl = '') {
+    const disposition = typeof contentDisposition === 'string' ? contentDisposition : '';
+    const encodedMatch = disposition.match(/filename\*\s*=\s*(?:UTF-8''|[^']*'[^']*')?([^;]+)/i);
+    const plainMatch = disposition.match(/filename\s*=\s*([^;]+)/i);
+    const headerName = cleanShareFilename(encodedMatch?.[1] || plainMatch?.[1]);
+    if (headerName) {
+      return headerName;
+    }
+
+    const itemName = cleanShareFilename(photo?.name);
+    if (itemName) {
+      return itemName.split(/[\\/]/).pop() || itemName;
+    }
+
+    const urlName = cleanShareFilename(String(sourceUrl || '').split(/[?#]/, 1)[0].split('/').pop());
+    return urlName || 'media';
+  }
+
+  function shareFileType(blobType = '', headerType = '') {
+    const normaliseMime = (value) => {
+      const mime = String(value || '').split(';', 1)[0].trim().toLowerCase();
+      return /^[a-z0-9!#$&^_.+*-]+\/[a-z0-9!#$&^_.+*-]+$/.test(mime) ? mime : '';
+    };
+    return normaliseMime(blobType) || normaliseMime(headerType) || 'application/octet-stream';
+  }
+
+  function isRawMedia(photo = {}, fileName = '') {
+    const format = String(photo?.format || '').trim().toUpperCase();
+    if (RAW_FORMATS.has(format)) {
+      return true;
+    }
+    const name = String(fileName || photo?.name || '');
+    const extension = name.match(/\.([a-z0-9]+)$/i)?.[1]?.toUpperCase() || '';
+    return RAW_FORMATS.has(extension);
+  }
+
   const helpers = {
     buildPhotoQuery,
     formatBytes,
@@ -330,6 +396,9 @@
     formatDate,
     sessionPresentation,
     buildExifRows,
+    shareFileName,
+    shareFileType,
+    isRawMedia,
   };
 
   if (typeof module !== 'undefined' && module.exports) {
@@ -368,6 +437,15 @@
     lightboxIndex: -1,
     lightboxRequest: null,
     lightboxSequence: 0,
+    shareSequence: 0,
+    sharePhotoId: null,
+    shareController: null,
+    sharePreviewController: null,
+    sharePromise: null,
+    sharePreviewPromise: null,
+    shareFiles: new Map(),
+    sharePreviewFiles: new Map(),
+    shareInFlight: false,
     previousFocus: null,
     swipeStartX: null,
     galleryLayoutFrame: null,
@@ -428,10 +506,12 @@
     lightboxVideo: document.getElementById('lightbox-video'),
     lightboxImageLoader: document.getElementById('lightbox-image-loader'),
     lightboxImageFrame: document.getElementById('lightbox-image-frame'),
-    lightboxDownload: document.getElementById('lightbox-download'),
+    lightboxShare: document.getElementById('lightbox-share'),
+    lightboxSharePreview: document.getElementById('lightbox-share-preview'),
     lightboxExif: document.getElementById('lightbox-exif-list'),
     lightboxLoading: document.getElementById('lightbox-loading'),
     lightboxError: document.getElementById('lightbox-error'),
+    lightboxShareStatus: document.getElementById('lightbox-share-status'),
     lightboxPrevious: document.getElementById('lightbox-previous'),
     lightboxNext: document.getElementById('lightbox-next'),
     lightboxClose: document.getElementById('lightbox-close'),
@@ -708,21 +788,6 @@
     parent.append(metadata);
   }
 
-  function makeDownloadLink(photo, className = '') {
-    const link = textElement('a', `photo-download ${className}`.trim(), 'Télécharger');
-    const url = normaliseAssetUrl(photo.download_url);
-    if (url) {
-      link.href = url;
-      link.setAttribute('download', photo.name || 'media');
-      link.setAttribute('aria-label', `Télécharger ${photo.name || 'le média'}`);
-    } else {
-      link.setAttribute('aria-disabled', 'true');
-      link.tabIndex = -1;
-      link.classList.add('is-disabled');
-    }
-    return link;
-  }
-
   function makePhotoCard(photo, index) {
     const mediaType = mediaTypeOf(photo);
     const isVideo = mediaType === 'video';
@@ -790,7 +855,6 @@
     caption.append(textElement('h3', 'photo-card__name', formatExifValue(photo.name)));
     appendPhotoMetadata(caption, photo);
     footer.append(caption);
-    footer.append(makeDownloadLink(photo));
     card.append(footer);
     return card;
   }
@@ -1271,11 +1335,341 @@
     dom.lightboxImageFrame.classList.remove('is-video');
   }
 
+  function shareMediaKey(photo = {}) {
+    if (photo.id !== undefined && photo.id !== null) {
+      return String(photo.id);
+    }
+    return normaliseAssetUrl(photo.download_url || photo.preview_url) || String(photo.name || 'media');
+  }
+
+  function hasNativeFileShare() {
+    return Boolean(
+      typeof window !== 'undefined'
+      && window.isSecureContext
+      && typeof navigator !== 'undefined'
+      && typeof navigator.share === 'function'
+      && typeof navigator.canShare === 'function',
+    );
+  }
+
+  function hasShareActivation() {
+    return Boolean(
+      typeof navigator !== 'undefined'
+      && navigator.userActivation
+      && navigator.userActivation.isActive === true,
+    );
+  }
+
+  function canShareFile(file) {
+    if (!hasNativeFileShare() || !file) {
+      return false;
+    }
+    try {
+      return navigator.canShare({ files: [file] }) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  function isShareAbort(error) {
+    return error?.name === 'AbortError';
+  }
+
+  function isCurrentShare(photo, sequence) {
+    return sequence === state.shareSequence
+      && state.sharePhotoId === shareMediaKey(photo)
+      && (dom.lightbox.open || dom.lightbox.hasAttribute('open'));
+  }
+
+  function setShareButtonState(button, busy, label) {
+    if (!button) {
+      return;
+    }
+    button.disabled = Boolean(busy);
+    button.setAttribute('aria-label', label);
+    button.setAttribute('title', label);
+    if (busy) {
+      button.setAttribute('aria-busy', 'true');
+    } else {
+      button.removeAttribute('aria-busy');
+    }
+  }
+
+  function setShareStatus(message, kind = '') {
+    setMessage(dom.lightboxShareStatus, message, kind);
+  }
+
+  function jpegShareFileName(photo) {
+    const originalName = shareFileName(photo, '', photo?.name || '');
+    const baseName = originalName.replace(/\.[^.]+$/, '') || 'media';
+    return `${baseName}.jpg`;
+  }
+
+  function resetLightboxShare() {
+    state.shareSequence += 1;
+    [state.shareController, state.sharePreviewController]
+      .filter(Boolean)
+      .forEach((controller) => controller.abort());
+    state.shareController = null;
+    state.sharePreviewController = null;
+    state.sharePromise = null;
+    state.sharePreviewPromise = null;
+    state.shareFiles.clear();
+    state.sharePreviewFiles.clear();
+    state.sharePhotoId = null;
+    state.shareInFlight = false;
+    setShareButtonState(dom.lightboxShare, false, 'Partager');
+    setShareButtonState(dom.lightboxSharePreview, false, 'Partager le JPEG');
+    setHidden(dom.lightboxSharePreview, true);
+    setShareStatus('');
+  }
+
+  function configureLightboxShare(photo) {
+    resetLightboxShare();
+    state.sharePhotoId = shareMediaKey(photo);
+  }
+
+  function showNativeShareUnavailable() {
+    setShareButtonState(dom.lightboxShare, false, 'Partager');
+    setShareStatus('Le partage de fichiers nécessite un navigateur compatible en HTTPS.', 'error');
+  }
+
+  function showShareReady(preview = false) {
+    const button = preview ? dom.lightboxSharePreview : dom.lightboxShare;
+    setShareButtonState(button, false, preview ? 'Partager le JPEG' : 'Partager');
+    setShareStatus(preview ? 'JPEG prêt. Touchez Partager.' : 'Fichier prêt. Touchez Partager.', 'info');
+  }
+
+  function showOriginalShareUnsupported(photo, file) {
+    setShareButtonState(dom.lightboxShare, false, 'Partager');
+    setShareStatus('Le partage de l’original n’est pas pris en charge sur cet appareil.', 'error');
+    const canOfferJpeg = isRawMedia(photo, file?.name)
+      && Boolean(normaliseAssetUrl(photo.preview_url));
+    setHidden(dom.lightboxSharePreview, !canOfferJpeg);
+    if (canOfferJpeg) {
+      setShareButtonState(dom.lightboxSharePreview, false, 'Partager le JPEG');
+    }
+  }
+
+  function showPreviewShareUnsupported() {
+    setShareButtonState(dom.lightboxSharePreview, false, 'Partager le JPEG');
+    setShareStatus('Le partage du JPEG n’est pas pris en charge sur cet appareil.', 'error');
+  }
+
+  function responseHeader(response, name) {
+    return response?.headers?.get?.(name) || '';
+  }
+
+  function prepareShareFile(photo, { preview = false, sequence = state.shareSequence } = {}) {
+    const key = shareMediaKey(photo);
+    const cache = preview ? state.sharePreviewFiles : state.shareFiles;
+    const cached = cache.get(key);
+    if (cached) {
+      return Promise.resolve(cached);
+    }
+
+    const sourceUrl = normaliseAssetUrl(preview ? photo.preview_url : photo.download_url);
+    if (!sourceUrl) {
+      return Promise.reject(new Error('Share source unavailable'));
+    }
+
+    const controller = new AbortController();
+    if (preview) {
+      state.sharePreviewController?.abort();
+      state.sharePreviewController = controller;
+    } else {
+      state.shareController?.abort();
+      state.shareController = controller;
+    }
+
+    const request = fetch(sourceUrl, {
+      credentials: 'same-origin',
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) {
+        throw new ApiError(`Fichier indisponible (${response.status}).`, response.status);
+      }
+      const blob = await response.blob();
+      if (controller.signal.aborted || !isCurrentShare(photo, sequence)) {
+        return null;
+      }
+      const contentType = responseHeader(response, 'Content-Type');
+      const fileName = preview
+        ? jpegShareFileName(photo)
+        : shareFileName(photo, responseHeader(response, 'Content-Disposition'), sourceUrl);
+      const file = new File([blob], fileName, { type: shareFileType(blob.type, contentType) });
+      if (controller.signal.aborted || !isCurrentShare(photo, sequence)) {
+        return null;
+      }
+      cache.set(key, file);
+      return file;
+    }).finally(() => {
+      if (preview && state.sharePreviewController === controller) {
+        state.sharePreviewController = null;
+      }
+      if (!preview && state.shareController === controller) {
+        state.shareController = null;
+      }
+    });
+    return request;
+  }
+
+  function finishNativeShare(error, photo, sequence, preview, button) {
+    if (!isCurrentShare(photo, sequence)) {
+      return;
+    }
+    state.shareInFlight = false;
+    setShareButtonState(button, false, preview ? 'Partager le JPEG' : 'Partager');
+    if (!error || isShareAbort(error)) {
+      if (!error) {
+        setShareStatus('');
+      }
+      return;
+    }
+    if (error.name === 'NotAllowedError') {
+      showShareReady(preview);
+      return;
+    }
+    setShareStatus(preview ? 'Le partage du JPEG a échoué. Réessayez.' : 'Le partage a échoué. Réessayez.', 'error');
+  }
+
+  function invokeNativeShare(file, photo, { preview = false, sequence = state.shareSequence } = {}) {
+    const button = preview ? dom.lightboxSharePreview : dom.lightboxShare;
+    if (!isCurrentShare(photo, sequence) || state.shareInFlight) {
+      return;
+    }
+    if (!canShareFile(file)) {
+      if (preview) {
+        showPreviewShareUnsupported();
+      } else {
+        showOriginalShareUnsupported(photo, file);
+      }
+      return;
+    }
+    if (!hasShareActivation()) {
+      showShareReady(preview);
+      return;
+    }
+
+    let sharePromise;
+    try {
+      setShareStatus('');
+      sharePromise = navigator.share({ files: [file] });
+    } catch (error) {
+      finishNativeShare(error, photo, sequence, preview, button);
+      return;
+    }
+    state.shareInFlight = true;
+    setShareButtonState(button, true, preview ? 'Partage en cours…' : 'Partage en cours…');
+    Promise.resolve(sharePromise)
+      .then(() => finishNativeShare(null, photo, sequence, preview, button))
+      .catch((error) => finishNativeShare(error, photo, sequence, preview, button));
+  }
+
+  function handleSharePreparationError(error, photo, sequence, preview = false) {
+    if (!isCurrentShare(photo, sequence) || isShareAbort(error)) {
+      return;
+    }
+    const button = preview ? dom.lightboxSharePreview : dom.lightboxShare;
+    setShareButtonState(button, false, preview ? 'Partager le JPEG' : 'Partager');
+    setShareStatus(
+      preview ? 'Le JPEG ne peut pas être préparé. Réessayez.' : 'Le fichier original ne peut pas être préparé. Réessayez.',
+      'error',
+    );
+  }
+
+  function onLightboxShare() {
+    const photo = state.items[state.lightboxIndex];
+    if (!photo || state.shareInFlight) {
+      return;
+    }
+    if (!hasNativeFileShare()) {
+      showNativeShareUnavailable();
+      return;
+    }
+    const key = shareMediaKey(photo);
+    const cached = state.shareFiles.get(key);
+    if (cached) {
+      invokeNativeShare(cached, photo, { sequence: state.shareSequence });
+      return;
+    }
+
+    const sequence = state.shareSequence;
+    setShareButtonState(dom.lightboxShare, true, 'Préparation du fichier…');
+    setShareStatus('Préparation du fichier…', 'info');
+    const promise = prepareShareFile(photo, { sequence });
+    state.sharePromise = promise;
+    promise.then((file) => {
+      if (!file || !isCurrentShare(photo, sequence)) {
+        return;
+      }
+      setShareButtonState(dom.lightboxShare, false, 'Partager');
+      if (!canShareFile(file)) {
+        showOriginalShareUnsupported(photo, file);
+        return;
+      }
+      if (hasShareActivation()) {
+        invokeNativeShare(file, photo, { sequence });
+      } else {
+        showShareReady();
+      }
+    }).catch((error) => handleSharePreparationError(error, photo, sequence))
+      .finally(() => {
+        if (state.sharePromise === promise) {
+          state.sharePromise = null;
+        }
+      });
+  }
+
+  function onLightboxSharePreview() {
+    const photo = state.items[state.lightboxIndex];
+    if (!photo || state.shareInFlight) {
+      return;
+    }
+    if (!hasNativeFileShare()) {
+      showNativeShareUnavailable();
+      return;
+    }
+    const key = shareMediaKey(photo);
+    const cached = state.sharePreviewFiles.get(key);
+    if (cached) {
+      invokeNativeShare(cached, photo, { preview: true, sequence: state.shareSequence });
+      return;
+    }
+
+    const sequence = state.shareSequence;
+    setShareButtonState(dom.lightboxSharePreview, true, 'Préparation du JPEG…');
+    setShareStatus('Préparation du JPEG…', 'info');
+    const promise = prepareShareFile(photo, { preview: true, sequence });
+    state.sharePreviewPromise = promise;
+    promise.then((file) => {
+      if (!file || !isCurrentShare(photo, sequence)) {
+        return;
+      }
+      setShareButtonState(dom.lightboxSharePreview, false, 'Partager le JPEG');
+      if (!canShareFile(file)) {
+        showPreviewShareUnsupported();
+        return;
+      }
+      if (hasShareActivation()) {
+        invokeNativeShare(file, photo, { preview: true, sequence });
+      } else {
+        showShareReady(true);
+      }
+    }).catch((error) => handleSharePreparationError(error, photo, sequence, true))
+      .finally(() => {
+        if (state.sharePreviewPromise === promise) {
+          state.sharePreviewPromise = null;
+        }
+      });
+  }
+
   function populateLightbox(photo, detail = null) {
     const title = formatExifValue(photo.name);
     const isVideo = mediaTypeOf(photo) === 'video';
     const width = finiteNumber(photo.width);
     const height = finiteNumber(photo.height);
+    configureLightboxShare(photo);
     dom.lightboxTitle.textContent = title;
     dom.lightboxPosition.textContent = `${state.lightboxIndex + 1} / ${state.items.length}`;
     resetLightboxMedia();
@@ -1304,7 +1698,7 @@
       }
       dom.lightboxImageFrame.classList.toggle('is-missing', !streamUrl);
     } else {
-      const assetUrl = normaliseAssetUrl(photo.preview_url || photo.thumb_url || photo.download_url);
+      const assetUrl = normaliseAssetUrl(photo.preview_url || photo.thumb_url);
       if (assetUrl) {
         dom.lightboxImage.hidden = false;
         dom.lightboxImage.src = assetUrl;
@@ -1318,17 +1712,6 @@
       dom.lightboxImageFrame.classList.toggle('is-missing', !assetUrl);
     }
 
-    const downloadUrl = normaliseAssetUrl(photo.download_url);
-    if (downloadUrl) {
-      dom.lightboxDownload.href = downloadUrl;
-      dom.lightboxDownload.setAttribute('download', photo.name || 'media');
-      dom.lightboxDownload.removeAttribute('aria-disabled');
-      dom.lightboxDownload.classList.remove('is-disabled');
-    } else {
-      dom.lightboxDownload.removeAttribute('href');
-      dom.lightboxDownload.setAttribute('aria-disabled', 'true');
-      dom.lightboxDownload.classList.add('is-disabled');
-    }
     dom.lightboxPrevious.disabled = state.lightboxIndex <= 0;
     dom.lightboxNext.disabled = state.lightboxIndex >= state.items.length - 1;
     renderExifRows(photo, detail || photo);
@@ -1395,6 +1778,7 @@
   }
 
   function closeLightbox() {
+    resetLightboxShare();
     if (!dom.lightbox.open && !dom.lightbox.hasAttribute('open')) {
       resetLightboxMedia();
       return;
@@ -1612,6 +1996,8 @@
     dom.lightboxClose.addEventListener('click', closeLightbox);
     dom.lightboxPrevious.addEventListener('click', () => navigateLightbox(-1));
     dom.lightboxNext.addEventListener('click', () => navigateLightbox(1));
+    dom.lightboxShare.addEventListener('click', onLightboxShare);
+    dom.lightboxSharePreview.addEventListener('click', onLightboxSharePreview);
     dom.lightboxImage.addEventListener('load', onLightboxMediaLoaded);
     dom.lightboxImage.addEventListener('error', onLightboxMediaError);
     dom.lightboxVideo.addEventListener('loadedmetadata', onLightboxMediaLoaded);
@@ -1624,6 +2010,7 @@
       closeLightbox();
     });
     dom.lightbox.addEventListener('close', () => {
+      resetLightboxShare();
       resetLightboxMedia();
       document.body.classList.remove('modal-open');
     });

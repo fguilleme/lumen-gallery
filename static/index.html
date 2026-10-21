@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#101112">
     <meta name="description" content="LUMEN — archive de médias privée.">
     <title>LUMEN · Archive de médias</title>
-    <link rel="stylesheet" href="/static/style.css?v=20261021-import2">
+    <link rel="stylesheet" href="/static/style.css?v=20261021-share1">
   </head>
   <body>
     <a class="skip-link" href="#main-content">Aller au contenu</a>
@@ -265,9 +265,18 @@
           <aside class="lightbox-aside" aria-label="Informations du média">
             <div class="lightbox-aside-topline">
               <p class="eyebrow">Métadonnées</p>
-              <a id="lightbox-download" class="button button--primary button--compact" href="#" download>Télécharger l’original <span aria-hidden="true">↓</span></a>
+              <div class="lightbox-share-actions">
+                <button id="lightbox-share" class="button button--primary lightbox-share" type="button" aria-label="Partager" title="Partager">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+                    <path d="M12 16V4m0 0-4 4m4-4 4 4"></path>
+                  </svg>
+                </button>
+                <button id="lightbox-share-preview" class="button button--outline button--compact" type="button" hidden>Partager le JPEG</button>
+              </div>
             </div>
             <p id="lightbox-loading" class="inline-message" aria-live="polite" hidden></p>
+            <p id="lightbox-share-status" class="inline-message" aria-live="polite" hidden></p>
             <p id="lightbox-error" class="inline-message" role="alert" hidden></p>
             <dl id="lightbox-exif-list" class="exif-list"></dl>
           </aside>
@@ -278,6 +287,6 @@
     <noscript>
       <div class="noscript-note">LUMEN a besoin de JavaScript pour afficher votre archive.</div>
     </noscript>
-    <script src="/static/app.js?v=20261021-import2"></script>
+    <script src="/static/app.js?v=20261021-share1"></script>
   </body>
 </html>
