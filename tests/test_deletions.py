@@ -15,6 +15,15 @@ from gallery.config import Settings
 from gallery.db import Database
 
 
+def _insert_zero(database, photo):
+    # These fixtures exercise explicit zero-star trash eligibility, not defaults.
+    existing = database.get_photo_by_path(photo['path'])
+    media_id = database.upsert_photo(photo)
+    if existing is None:
+        database.update_rating(media_id, 0)
+    return media_id
+
+
 def _settings(tmp_path: Path) -> Settings:
     source = tmp_path / "source"
     source.mkdir()
@@ -60,7 +69,7 @@ def test_due_move_requires_an_existing_zero_rated_catalogue_record(tmp_path: Pat
     source = settings.photo_root / "orphan.jpg"
     source.write_bytes(b"keep-this-original")
     database = Database(settings.db_path)
-    photo_id = database.upsert_photo(_photo(source))
+    photo_id = _insert_zero(database, _photo(source))
     database.schedule_zero(now=datetime(2024, 1, 1, tzinfo=timezone.utc))
     with database.connect() as connection:
         connection.execute("DELETE FROM photos WHERE id = ?", (photo_id,))
@@ -77,7 +86,7 @@ def test_schedule_zero_persists_snapshot_and_calendar_due_date(tmp_path: Path):
     source = settings.photo_root / "zero.jpg"
     source.write_bytes(b"zero-bytes")
     database = Database(settings.db_path)
-    photo_id = database.upsert_photo(_photo(source))
+    photo_id = _insert_zero(database, _photo(source))
 
     now = datetime(2024, 1, 31, 12, 0, tzinfo=timezone.utc)
     result = database.schedule_zero(now=now)
@@ -112,8 +121,8 @@ def test_schedule_zero_is_idempotent_and_rating_cancels_joined_annotation(tmp_pa
     first.write_bytes(b"first")
     second.write_bytes(b"second")
     database = Database(settings.db_path)
-    first_id = database.upsert_photo(_photo(first))
-    second_id = database.upsert_photo(_photo(second))
+    first_id = _insert_zero(database, _photo(first))
+    second_id = _insert_zero(database, _photo(second))
     database.update_rating(second_id, 1)
 
     now = datetime(2024, 1, 31, 12, 0, tzinfo=timezone.utc)
@@ -152,8 +161,8 @@ def test_deletion_status_filter_composes_with_catalogue_filters(tmp_path: Path):
     scheduled_path.write_bytes(b"scheduled")
     other_path.write_bytes(b"other")
     database = Database(settings.db_path)
-    scheduled_id = database.upsert_photo(_photo(scheduled_path))
-    database.upsert_photo(_photo(other_path))
+    scheduled_id = _insert_zero(database, _photo(scheduled_path))
+    _insert_zero(database, _photo(other_path))
     database.schedule_zero(now=datetime(2024, 1, 1, tzinfo=timezone.utc))
 
     rows, total = database.list_photos(
@@ -176,7 +185,7 @@ def test_deletion_api_schedule_status_filter_and_rating_undo(tmp_path: Path):
     path = settings.photo_root / "api-zero.jpg"
     path.write_bytes(b"api-zero")
     database = Database(settings.db_path)
-    photo_id = database.upsert_photo(_photo(path))
+    photo_id = _insert_zero(database, _photo(path))
     client = TestClient(create_app(settings))
 
     assert client.get("/api/deletions/status").json() == {"scheduled": 0, "trashed": 0}
@@ -217,7 +226,7 @@ def test_explicit_cancel_endpoint_and_trash_recovery_listing(tmp_path: Path):
     path = settings.photo_root / "cancel-me.jpg"
     path.write_bytes(b"cancel-me")
     database = Database(settings.db_path)
-    photo_id = database.upsert_photo(_photo(path))
+    photo_id = _insert_zero(database, _photo(path))
     client = TestClient(create_app(settings))
 
     assert client.post("/api/deletions/schedule-zero", json={}).status_code == 200
@@ -275,7 +284,7 @@ def test_worker_dry_run_apply_manifest_and_restore_preserve_bytes(tmp_path: Path
     database = Database(settings.db_path)
     video = _photo(source)
     video.update(format="MP4", media_type="video", duration=2.5)
-    photo_id = database.upsert_photo(video)
+    photo_id = _insert_zero(database, video)
     database.schedule_zero(now=datetime(2024, 1, 1, tzinfo=timezone.utc))
     job = database.get_deletion_job_for_media(photo_id)
     assert job is not None
@@ -319,7 +328,7 @@ def test_worker_marks_changed_source_error_without_moving_it(tmp_path: Path):
     source = settings.photo_root / "changed.jpg"
     source.write_bytes(b"before")
     database = Database(settings.db_path)
-    photo_id = database.upsert_photo(_photo(source))
+    photo_id = _insert_zero(database, _photo(source))
     database.schedule_zero(now=datetime(2024, 1, 1, tzinfo=timezone.utc))
     source.write_bytes(b"after-and-different")
 
@@ -354,8 +363,8 @@ def test_worker_rejects_symlink_and_cross_root_catalogue_paths(tmp_path: Path):
         relative_path="link.jpg",
         name="link.jpg",
     )
-    linked_id = database.upsert_photo(linked)
-    escaped_id = database.upsert_photo(_photo(outside))
+    linked_id = _insert_zero(database, linked)
+    escaped_id = _insert_zero(database, _photo(outside))
     database.schedule_zero(now=datetime(2024, 1, 1, tzinfo=timezone.utc))
 
     result = process_due_jobs(
@@ -377,7 +386,7 @@ def test_restore_collision_is_blocked_without_overwrite(tmp_path: Path):
     source = settings.photo_root / "collision.jpg"
     source.write_bytes(b"original")
     database = Database(settings.db_path)
-    photo_id = database.upsert_photo(_photo(source))
+    photo_id = _insert_zero(database, _photo(source))
     database.schedule_zero(now=datetime(2024, 1, 1, tzinfo=timezone.utc))
     job = database.get_deletion_job_for_media(photo_id)
     assert job is not None
@@ -401,7 +410,7 @@ def test_worker_recovers_manifest_window_and_rejects_source_trash_both_present(t
     source = settings.photo_root / "window.jpg"
     source.write_bytes(b"window")
     database = Database(settings.db_path)
-    photo_id = database.upsert_photo(_photo(source))
+    photo_id = _insert_zero(database, _photo(source))
     database.schedule_zero(now=datetime(2024, 1, 1, tzinfo=timezone.utc))
     job = database.get_deletion_job_for_media(photo_id)
     assert job is not None
@@ -444,7 +453,7 @@ def test_worker_recovers_manifest_window_and_rejects_source_trash_both_present(t
 
     both = settings.photo_root / "both.jpg"
     both.write_bytes(b"both")
-    both_id = database.upsert_photo(_photo(both))
+    both_id = _insert_zero(database, _photo(both))
     database.schedule_zero(now=datetime(2024, 1, 1, tzinfo=timezone.utc))
     both_job = database.get_deletion_job_for_media(both_id)
     assert both_job is not None
@@ -483,7 +492,7 @@ def test_worker_cross_filesystem_move_fails_without_unlinking_source(tmp_path: P
     source = settings.photo_root / "cross-device.jpg"
     source.write_bytes(b"cross-device")
     database = Database(settings.db_path)
-    photo_id = database.upsert_photo(_photo(source))
+    photo_id = _insert_zero(database, _photo(source))
     database.schedule_zero(now=datetime(2024, 1, 1, tzinfo=timezone.utc))
 
     def fail_rename(_source, _destination):
@@ -510,8 +519,8 @@ def test_reconcile_and_scan_upsert_preserve_scheduled_and_trashed_jobs(tmp_path:
     scheduled_source.write_bytes(b"scheduled")
     trashed_source.write_bytes(b"trashed")
     database = Database(settings.db_path)
-    scheduled_id = database.upsert_photo(_photo(scheduled_source))
-    trashed_id = database.upsert_photo(_photo(trashed_source))
+    scheduled_id = _insert_zero(database, _photo(scheduled_source))
+    trashed_id = _insert_zero(database, _photo(trashed_source))
     database.schedule_zero(now=datetime(2024, 1, 1, tzinfo=timezone.utc))
     scheduled_job = database.get_deletion_job_for_media(scheduled_id)
     trashed_job = database.get_deletion_job_for_media(trashed_id)
@@ -548,7 +557,7 @@ def test_worker_holds_database_lock_through_final_move_check(tmp_path: Path, mon
     source = settings.photo_root / "concurrent.jpg"
     source.write_bytes(b"concurrent")
     database = Database(settings.db_path)
-    photo_id = database.upsert_photo(_photo(source))
+    photo_id = _insert_zero(database, _photo(source))
     database.schedule_zero(now=datetime(2024, 1, 1, tzinfo=timezone.utc))
     entered_rename = threading.Event()
     release_rename = threading.Event()
@@ -599,7 +608,7 @@ def test_worker_cli_defaults_to_dry_run_and_apply_is_explicit(tmp_path: Path, mo
     source = settings.photo_root / "cli.jpg"
     source.write_bytes(b"cli")
     database = Database(settings.db_path)
-    database.upsert_photo(_photo(source))
+    _insert_zero(database, _photo(source))
     database.schedule_zero(now=datetime(2024, 1, 1, tzinfo=timezone.utc))
     monkeypatch.setenv("PHOTO_ROOT", str(settings.photo_root))
     monkeypatch.setenv("PHOTO_DATA_DIR", str(settings.data_dir))

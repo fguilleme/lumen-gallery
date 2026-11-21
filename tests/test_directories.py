@@ -134,6 +134,7 @@ def test_facets_include_root_and_ancestor_directories_with_subtree_counts_withou
         (root_two, "nested/other.jpg"),
     ]
     ids = [_insert(database, root, relative_path) for root, relative_path in rows]
+    database.update_rating(ids[4], 0)
     database.schedule_zero()
     with database.connect() as connection:
         connection.execute(

@@ -212,7 +212,9 @@ class MediaCache:
             "-map",
             "0:v:0",
             "-map",
-            "0:a?",
+            # Browser cache keeps the primary audio track only. Modern MOVs
+            # may also contain Apple spatial/APAC tracks unsupported in MP4.
+            "0:a:0?",
         ]
         if video_codec in {"h264", "avc1"}:
             arguments.extend(["-c:v", "copy"])

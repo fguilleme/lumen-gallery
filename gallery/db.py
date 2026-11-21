@@ -511,8 +511,8 @@ class Database:
                 INSERT INTO photos(
                     path, root_path, relative_path, name, format, date, camera, lens,
                     iso, aperture, shutter, focal, width, height, size, mtime_ns, exif_json,
-                    media_type, duration
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    media_type, duration, rating
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                 ON CONFLICT(path) DO UPDATE SET
                     root_path = excluded.root_path,
                     relative_path = excluded.relative_path,

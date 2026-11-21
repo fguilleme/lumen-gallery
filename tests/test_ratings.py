@@ -157,7 +157,7 @@ def test_rating_patch_rejects_bounds_and_non_strict_integer_payloads(tmp_path: P
         response = client.patch(f"/api/photos/{row['id']}/rating", json=payload)
         assert response.status_code == 422, payload
 
-    assert database.get_photo(row["id"])["rating"] == 0  # type: ignore[index]
+    assert database.get_photo(row["id"])["rating"] == 1  # type: ignore[index]
     assert client.patch("/api/photos/999999/rating", json={"rating": 2}).status_code == 404
 
 
@@ -324,7 +324,7 @@ def test_rating_filters_compositions_pagination_total_and_stable_sorts(tmp_path:
         date="2024-01-04T00:00:00",
         camera="Cat Camera",
     )
-    for row, rating in ((zero_tie, 0), (one, 1), (three, 3), (four, 4)):
+    for row, rating in ((zero, 0), (zero_tie, 0), (one, 1), (three, 3), (four, 4)):
         assert database.update_rating(row["id"], rating) is not None
     database.register_upload(zero["path"], zero["name"])
     database.register_upload(four["path"], four["name"])
@@ -405,7 +405,7 @@ def test_rating_patch_requires_session_when_auth_enabled(tmp_path: Path):
 
     response = client.patch(f"/api/photos/{row['id']}/rating", json={"rating": 3})
     assert response.status_code == 401
-    assert database.get_photo(row["id"])["rating"] == 0  # type: ignore[index]
+    assert database.get_photo(row["id"])["rating"] == 1  # type: ignore[index]
 
 
 def test_passwordless_rating_patch_rejects_cross_origin_state_change(tmp_path: Path):
@@ -419,4 +419,4 @@ def test_passwordless_rating_patch_rejects_cross_origin_state_change(tmp_path: P
         headers={"Origin": "https://evil.example"},
     )
     assert response.status_code == 403
-    assert database.get_photo(row["id"])["rating"] == 0  # type: ignore[index]
+    assert database.get_photo(row["id"])["rating"] == 1  # type: ignore[index]

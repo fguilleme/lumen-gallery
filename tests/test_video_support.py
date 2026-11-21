@@ -203,6 +203,35 @@ def test_real_mp4_and_mov_scan_with_video_metadata_and_filters(tmp_path: Path):
     assert client.get("/api/photos", params={"media_type": "audio"}).status_code == 422
 
 
+def test_mov_with_secondary_incompatible_audio_uses_only_primary_audio(tmp_path: Path):
+    source=tmp_path/'source'
+    source.mkdir()
+    path=source/'multi-audio.mov'
+    subprocess.run([
+        FFMPEG,'-hide_banner','-loglevel','error','-y',
+        '-f','lavfi','-i','testsrc2=size=64x40:rate=10',
+        '-f','lavfi','-i','sine=frequency=500:sample_rate=48000',
+        '-f','lavfi','-i','sine=frequency=800:sample_rate=48000',
+        '-t','0.5','-map','0:v:0','-map','1:a:0','-map','2:a:0',
+        '-c:v','libx264','-pix_fmt','yuv420p','-c:a:0','aac','-c:a:1','pcm_s16le',str(path)
+    ],check=True,capture_output=True)
+    original=hashlib.sha256(path.read_bytes()).hexdigest()
+    client=make_client(tmp_path,source)
+    assert client.post('/api/scan').status_code==200
+    assert wait_for_scan(client)['errors']==[]
+    item=client.get('/api/photos').json()['items'][0]
+    response=client.get(item['stream_url'])
+    assert response.status_code==200,response.text[:500]
+    prepared=tmp_path/'prepared.mp4'
+    prepared.write_bytes(response.content)
+    info=json.loads(subprocess.run(['ffprobe','-v','error','-show_streams','-of','json',str(prepared)],check=True,capture_output=True,text=True).stdout)
+    audio=[stream for stream in info['streams'] if stream['codec_type']=='audio']
+    assert len(audio)==1
+    assert audio[0]['codec_name']=='aac'
+    assert next(stream for stream in info['streams'] if stream['codec_type']=='video')['codec_name']=='h264'
+    assert hashlib.sha256(path.read_bytes()).hexdigest()==original
+
+
 def test_video_preview_stream_remux_range_download_and_source_integrity(tmp_path: Path):
     source = tmp_path / "source"
     source.mkdir()
