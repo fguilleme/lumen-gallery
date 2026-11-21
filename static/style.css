@@ -587,6 +587,10 @@ select option {
   transform: rotate(180deg);
 }
 
+.filters-form .directory-field {
+  grid-column: 1 / -1;
+}
+
 .filters-form {
   position: absolute;
   top: calc(100% + 0.45rem);

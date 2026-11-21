@@ -19,7 +19,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictInt
 
 from gallery.config import Settings
-from gallery.db import SORT_SQL, Database
+from gallery.db import (
+    SORT_SQL,
+    Database,
+    directory_label,
+    directory_parent,
+    directory_token,
+)
 from gallery.exif import SUPPORTED_EXTENSIONS, ExifTool
 from gallery.media import MediaCache, MediaConversionError, MediaNotFound, resolve_photo_path
 from gallery.scanner import ScanManager
@@ -122,9 +128,13 @@ def _public_number(value: Any) -> Any:
 def _item(row: dict[str, Any]) -> dict[str, Any]:
     photo_id = int(row["id"])
     media_type = str(row.get("media_type") or "photo")
+    parent = directory_parent(str(row["relative_path"]))
+    root = str(row["root_path"])
     return {
         "id": photo_id,
         "name": str(row["name"]),
+        "directory": directory_token(root, parent),
+        "directory_label": directory_label(root, parent),
         "format": str(row["format"]),
         "media_type": media_type,
         "duration": row.get("duration"),
@@ -351,6 +361,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         format: str | None = None,
         media_type: Literal["photo", "video"] | None = Query(None),
         imported_only: bool = Query(False),
+        directory: str | None = Query(None),
         date_from: str | None = None,
         date_to: str | None = None,
         iso_min: float | None = None,
@@ -372,6 +383,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             format=format,
             media_type=media_type,
             imported_only=imported_only,
+            directory=directory,
             date_from=date_from,
             date_to=date_to,
             iso_min=iso_min,
@@ -386,7 +398,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"items": [_item(row) for row in rows], "total": total}
 
     @app.get("/api/facets")
-    def facets(_: None = Depends(require_session)) -> dict[str, list[str]]:
+    def facets(_: None = Depends(require_session)) -> dict[str, Any]:
         return database.facets()
 
     def get_photo(photo_id: int) -> dict[str, Any]:

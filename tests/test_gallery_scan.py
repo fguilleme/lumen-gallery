@@ -134,6 +134,7 @@ def test_scan_search_sort_filter_and_download(tmp_path: Path):
         "cameras": ["Camera A", "Camera B"],
         "lenses": ["Lens Tele", "Lens Wide"],
         "formats": ["JPEG"],
+        "directories": [{"value": first["directory"], "label": "source", "count": 2}],
     }
 
     detail = client.get(f"/api/photos/{first['id']}")

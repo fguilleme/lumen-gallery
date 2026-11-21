@@ -1,12 +1,80 @@
 from __future__ import annotations
 
+import base64
 import calendar
 import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Iterable, Iterator
+
+
+def _normalise_root(root: PurePath | str) -> str:
+    value = str(Path(root))
+    return value.rstrip("/") or "/"
+
+
+def _normalise_parent(parent: PurePath | str) -> str:
+    value = PurePosixPath(str(parent)).as_posix()
+    return value if value not in {"", "."} else "."
+
+
+def directory_token(root: PurePath | str, parent: PurePath | str) -> str:
+    """Encode a directory as URL-safe base64 JSON ``[root_path, parent]``.
+
+    The token is opaque to the public API, not a secrecy boundary. ``root_path``
+    is normalized without a trailing slash and a root-level directory uses
+    ``parent == '.'``.
+    """
+    payload = json.dumps(
+        [_normalise_root(root), _normalise_parent(parent)],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def decode_directory_token(value: str | None) -> tuple[str, str] | None:
+    """Decode and validate a public directory token, returning ``(root, parent)``."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        payload = json.loads(
+            base64.b64decode(padded.encode("ascii"), altchars=b"-_", validate=True)
+        )
+    except (UnicodeEncodeError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, list) or len(payload) != 2:
+        return None
+    root, parent = payload
+    if not isinstance(root, str) or not isinstance(parent, str) or not root or not parent:
+        return None
+    normalized_root = _normalise_root(root)
+    normalized_parent = _normalise_parent(parent)
+    parent_path = PurePosixPath(normalized_parent)
+    if (
+        root != normalized_root
+        or parent != normalized_parent
+        or parent_path.is_absolute()
+    ):
+        return None
+    if ".." in parent_path.parts:
+        return None
+    return normalized_root, normalized_parent
+
+
+def directory_parent(relative_path: PurePath | str) -> str:
+    """Return the POSIX parent directory, using ``'.'`` for root-level files."""
+    return _normalise_parent(PurePosixPath(str(relative_path)).parent)
+
+
+def directory_label(root: PurePath | str, parent: PurePath | str) -> str:
+    """Return the public root-basename/relative-parent directory label."""
+    root_name = PurePosixPath(_normalise_root(root)).name or _normalise_root(root)
+    normalized_parent = _normalise_parent(parent)
+    return root_name if normalized_parent == "." else f"{root_name}/{normalized_parent}"
 
 
 SORT_SQL = {
@@ -15,6 +83,16 @@ SORT_SQL = {
     "rating_desc": "rating DESC, date DESC, id ASC",
     "rating_asc": "rating ASC, date ASC, id ASC",
     "name_asc": "name COLLATE NOCASE ASC, id ASC",
+    "directory_asc": (
+        "root_path COLLATE NOCASE ASC, "
+        "directory_parent(relative_path) COLLATE NOCASE ASC, "
+        "name COLLATE NOCASE ASC, id ASC"
+    ),
+    "directory_desc": (
+        "root_path COLLATE NOCASE DESC, "
+        "directory_parent(relative_path) COLLATE NOCASE DESC, "
+        "name COLLATE NOCASE ASC, id ASC"
+    ),
     "iso_asc": "(iso IS NULL) ASC, iso ASC, name COLLATE NOCASE ASC, id ASC",
     "iso_desc": "(iso IS NULL) ASC, iso DESC, name COLLATE NOCASE ASC, id ASC",
     "aperture_asc": "(aperture IS NULL) ASC, aperture ASC, name COLLATE NOCASE ASC, id ASC",
@@ -33,6 +111,9 @@ class Database:
         connection = sqlite3.connect(self.path, timeout=30)
         try:
             connection.row_factory = sqlite3.Row
+            connection.create_function(
+                "directory_parent", 1, directory_parent, deterministic=True
+            )
             connection.execute("PRAGMA busy_timeout = 30000")
             connection.execute("PRAGMA journal_mode = WAL")
             with connection:
@@ -405,7 +486,7 @@ class Database:
     def upsert_photo(self, photo: dict[str, Any]) -> int:
         fields = (
             photo["path"],
-            photo["root_path"],
+            _normalise_root(photo["root_path"]),
             photo["relative_path"],
             photo["name"],
             photo["format"],
@@ -511,6 +592,7 @@ class Database:
         format: str | None = None,
         media_type: str | None = None,
         imported_only: bool = False,
+        directory: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
         iso_min: float | None = None,
@@ -546,6 +628,19 @@ class Database:
             clauses.append(
                 "EXISTS (SELECT 1 FROM upload_names WHERE upload_names.stored_path = p.path)"
             )
+        if directory is not None:
+            decoded = decode_directory_token(directory)
+            if decoded is None:
+                clauses.append("0 = 1")
+            else:
+                root, parent = decoded
+                parent_expression = "directory_parent(p.relative_path)"
+                clauses.append(
+                    "(p.root_path = ? AND "
+                    f"(? = '.' OR {parent_expression} = ? OR "
+                    f"substr({parent_expression}, 1, length(?) + 1) = ? || '/'))"
+                )
+                params.extend([root, parent, parent, parent, parent])
         if date_from:
             clauses.append("substr(date, 1, 10) >= ?")
             params.append(date_from[:10])
@@ -581,6 +676,7 @@ class Database:
         format: str | None = None,
         media_type: str | None = None,
         imported_only: bool = False,
+        directory: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
         iso_min: float | None = None,
@@ -599,6 +695,7 @@ class Database:
             format=format,
             media_type=media_type,
             imported_only=imported_only,
+            directory=directory,
             date_from=date_from,
             date_to=date_to,
             iso_min=iso_min,
@@ -619,9 +716,9 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows], total
 
-    def facets(self) -> dict[str, list[str]]:
+    def facets(self) -> dict[str, Any]:
         with self.connect() as connection:
-            result: dict[str, list[str]] = {}
+            result: dict[str, Any] = {}
             output_keys = {"camera": "cameras", "lens": "lenses", "format": "formats"}
             for key in ("camera", "lens", "format"):
                 result[output_keys[key]] = [
@@ -639,4 +736,43 @@ class Database:
                         """
                     )
                 ]
+
+            directory_counts: dict[tuple[str, str], int] = {}
+            rows = connection.execute(
+                """
+                SELECT p.root_path, directory_parent(p.relative_path) AS parent
+                FROM photos AS p
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM deletion_jobs
+                    WHERE media_id = p.id AND status = 'trashed'
+                )
+                """
+            ).fetchall()
+            for row in rows:
+                root = _normalise_root(str(row["root_path"]))
+                parent = _normalise_parent(str(row["parent"]))
+                parts = [] if parent == "." else parent.split("/")
+                ancestors = ["."] + [
+                    "/".join(parts[:index]) for index in range(1, len(parts) + 1)
+                ]
+                for ancestor in ancestors:
+                    key = (root, ancestor)
+                    directory_counts[key] = directory_counts.get(key, 0) + 1
+
+            result["directories"] = [
+                {
+                    "value": directory_token(root, parent),
+                    "label": directory_label(root, parent),
+                    "count": count,
+                }
+                for (root, parent), count in sorted(
+                    directory_counts.items(),
+                    key=lambda item: (
+                        item[0][0].casefold(),
+                        item[0][0],
+                        item[0][1].casefold(),
+                        item[0][1],
+                    ),
+                )
+            ]
         return result

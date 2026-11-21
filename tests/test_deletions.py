@@ -243,7 +243,7 @@ def test_explicit_cancel_endpoint_and_trash_recovery_listing(tmp_path: Path):
     assert listed["media_id"] == photo_id
     assert listed["status"] == "trashed"
     assert client.get("/api/photos").json()["total"] == 0
-    assert client.get("/api/facets").json() == {"cameras": [], "lenses": [], "formats": []}
+    assert client.get("/api/facets").json() == {"cameras": [], "lenses": [], "formats": [], "directories": []}
     assert client.patch(f"/api/photos/{photo_id}/rating", json={"rating": 1}).status_code == 404
 
 

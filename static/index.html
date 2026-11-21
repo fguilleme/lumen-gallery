@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#101112">
     <meta name="description" content="LUMEN — archive de médias privée.">
     <title>LUMEN · Archive de médias</title>
-    <link rel="stylesheet" href="/static/style.css?v=20261021-stars-filled1">
+    <link rel="stylesheet" href="/static/style.css?v=20261121-directories2">
   </head>
   <body>
     <a class="skip-link" href="#main-content">Aller au contenu</a>
@@ -75,6 +75,8 @@
                   <option value="date_desc">Plus récentes</option>
                   <option value="date_asc">Plus anciennes</option>
                   <option value="name_asc">Nom A → Z</option>
+                  <option value="directory_asc">Dossier A → Z</option>
+                  <option value="directory_desc">Dossier Z → A</option>
                   <option value="iso_asc">ISO croissant</option>
                   <option value="iso_desc">ISO décroissant</option>
                   <option value="aperture_asc">Ouverture croissante</option>
@@ -109,6 +111,13 @@
                   <span class="summary-chevron" aria-hidden="true">⌄</span>
                 </summary>
                 <form id="filters-form" class="filters-form">
+                  <label class="directory-field" for="directory-filter">
+                    <span>Dossier</span>
+                    <select id="directory-filter" aria-describedby="directory-help">
+                      <option value="">Tous les dossiers</option>
+                    </select>
+                    <small id="directory-help">Sous-dossiers inclus</small>
+                  </label>
                   <label for="camera-filter">
                     <span>Appareil</span>
                     <select id="camera-filter">
@@ -315,6 +324,6 @@
     <noscript>
       <div class="noscript-note">LUMEN a besoin de JavaScript pour afficher votre archive.</div>
     </noscript>
-    <script src="/static/app.js?v=20261021-stars-filled1"></script>
+    <script src="/static/app.js?v=20261121-directories2"></script>
   </body>
 </html>

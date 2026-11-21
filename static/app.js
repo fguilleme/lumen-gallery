@@ -5,6 +5,8 @@
     'date_desc',
     'date_asc',
     'name_asc',
+    'directory_asc',
+    'directory_desc',
     'iso_asc',
     'iso_desc',
     'aperture_asc',
@@ -21,6 +23,7 @@
     ['rating', 'rating'],
     ['deletionStatus', 'deletion_status'],
     ['q', 'q'],
+    ['directory', 'directory'],
     ['camera', 'camera'],
     ['lens', 'lens'],
     ['format', 'format'],
@@ -811,6 +814,7 @@
     filterDetails: document.getElementById('filter-details'),
     filterCount: document.getElementById('filter-count'),
     cameraSelect: document.getElementById('camera-filter'),
+    directorySelect: document.getElementById('directory-filter'),
     lensSelect: document.getElementById('lens-filter'),
     formatSelect: document.getElementById('format-filter'),
     dateFrom: document.getElementById('date-from'),
@@ -985,6 +989,7 @@
   function currentFilters() {
     return {
       q: dom.searchInput?.value || '',
+      directory: dom.directorySelect.value,
       camera: dom.cameraSelect.value,
       lens: dom.lensSelect.value,
       format: dom.formatSelect.value,
@@ -1017,6 +1022,7 @@
     dom.mediaTypeSelect.value = '';
     dom.ratingFilter.value = '';
     dom.deletionStatusFilter.value = '';
+    dom.directorySelect.value = '';
     dom.cameraSelect.value = '';
     dom.lensSelect.value = '';
     dom.formatSelect.value = '';
@@ -1052,6 +1058,7 @@
       dom.importedOnlyFilter.checked ? 'true' : '',
       dom.ratingFilter.value,
       dom.deletionStatusFilter.value,
+      dom.directorySelect.value,
       dom.cameraSelect.value,
       dom.lensSelect.value,
       dom.formatSelect.value,
@@ -1642,6 +1649,21 @@
     }
   }
 
+  function fillDirectorySelect(values) {
+    const select = dom.directorySelect;
+    const previous = select.value;
+    select.replaceChildren(new Option('Tous les dossiers', ''));
+    const entries = (Array.isArray(values) ? values : [])
+      .filter((entry) => entry && typeof entry.value === 'string' && typeof entry.label === 'string')
+      .sort((a, b) => a.label.localeCompare(b.label, 'fr', { sensitivity: 'base' }));
+    for (const entry of entries) {
+      select.append(new Option(`${entry.label} (${entry.count})`, entry.value));
+    }
+    if (entries.some((entry) => entry.value === previous)) {
+      select.value = previous;
+    }
+  }
+
   async function loadFacets() {
     if (state.facetsRequest) {
       state.facetsRequest.abort();
@@ -1654,6 +1676,7 @@
       if (sequence !== state.facetsSequence || controller.signal.aborted) {
         return;
       }
+      fillDirectorySelect(payload?.directories);
       fillSelect(dom.cameraSelect, payload?.cameras, 'Tous les appareils');
       fillSelect(dom.lensSelect, payload?.lenses, 'Tous les objectifs');
       fillSelect(dom.formatSelect, payload?.formats, 'Tous les formats');
