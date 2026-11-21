@@ -1,146 +1,199 @@
-# LUMEN — galerie photographique privée
+# LUMEN — Private photo and media gallery
 
-Galerie responsive en français pour photographes : planche-contact photo/vidéo, visionneuse avec navigation clavier/tactile, zoom/pan, métadonnées usuelles, menus de filtrage, notation 0–4 et partage natif. FastAPI, SQLite, Pillow, ExifTool et FFmpeg ; aucun service cloud ni développement RAW. Les JPEG embarqués des RAW servent aux aperçus.
+[Français](README.fr.md) · **English**
 
-## Installation active
+LUMEN is a self-hosted, responsive catalogue for photographs and videos. Originals stay on the server, catalogue annotations live in SQLite, and the browser interface covers browsing, filtering, rating, sharing, and local visual similarity.
 
-- URL recommandée : https://arcturus.tail38ed6c.ts.net:9443 via Tailscale Serve (tailnet uniquement). La connexion et les miniatures ont été vérifiées via HTTPS dans Chromium mobile. Accès direct historique : http://100.90.227.52:8093.
-- Tailscale Serve 9443 relaie vers http://100.90.227.52:8093 ; les autres ports Serve restent inchangés. Uvicorn accepte les en-têtes proxy uniquement depuis 100.90.227.52 pour conserver schéma HTTPS, contrôle Origin et cookies Secure. Ne pas utiliser --no-proxy-headers derrière ce proxy.
-- Écoute limitée à l’adresse Tailscale, pas au LAN ni à Internet. HTTP est transporté dans le tunnel chiffré Tailscale.
-- Source en lecture seule : /mnt/usb/LUMEN/Salomé. Catalogue validé lors de la migration : 3 929 médias, dont 3 891 photos et 38 vidéos ; 9 médias proviennent des imports. Les vidéos `.mov`, `.mp4`, `.m4v` et `.webm` sont indexées à partir des métadonnées ffprobe ; les aperçus sont extraits à la demande.
-- Accès sans mot de passe applicatif : PHOTO_AUTH_REQUIRED=false. Tailscale constitue la frontière d’accès ; ne pas exposer cette instance sur Internet ou sur toutes les interfaces. Les protections Origin des actions restent actives. L’authentification reste activée par défaut si ce paramètre est absent.
-- Configuration : /home/francois/.config/lumen-gallery/gallery.env.
-- Service utilisateur : lumen-gallery.service, activé au démarrage de la session utilisateur. Linger est déjà actif sur cet hôte.
-- Commandes : `systemctl --user status lumen-gallery`, `systemctl --user restart lumen-gallery`, `journalctl --user -u lumen-gallery -n 50`.
-- L’index SQLite et les aperçus sont dans data/, séparés des originaux. Le premier scan est déclenché ; les scans suivants se lancent avec « Réindexer » et ignorent les fichiers inchangés.
-- Le serveur web n’écrit jamais les originaux : son unité impose ReadOnlyPaths sur le dossier source. Seul le service de maintenance distinct peut déplacer vers la corbeille les fichiers explicitement programmés, à leur échéance, après nouvelle vérification de leur note.
-- Maintenance installée : `lumen-trash.timer` vérifie les échéances chaque heure, via `ops/lumen-trash.service`. Les unités utilisateur sont des liens vers `ops/`. Aucun effacement définitif ni vidage automatique de la corbeille.
+The interface is currently **French**. English documentation does not imply that the application UI has been translated.
 
-## Stockage USB actif
+## Screenshots
 
-Originaux : `/mnt/usb/LUMEN/Salomé`. Catalogue, imports, corbeille, modèles et caches : `/mnt/usb/LUMEN/data`. L’application et son environnement Python restent sur le disque interne. Les anciens chemins `/home/francois/Salomé` et `data` sont des liens de compatibilité vers le stockage USB.
+![Desktop LUMEN gallery showing the responsive media grid, filters, and ratings](docs/screenshots/gallery-desktop.webp)
 
-Le montage Btrfs utilise l’UUID `b451a1d2-ed01-4017-93a2-d6fde8a4367f` via `/etc/fstab` avec automontage systemd. Les surcharges suivies dans `ops/lumen-gallery-usb.conf` et `ops/lumen-trash-usb.conf` sont liées dans les répertoires `.service.d/` des unités utilisateur : elles imposent le disque attendu, un marqueur de stockage, les originaux en lecture seule pour le serveur et les seules zones d’écriture nécessaires. Le serveur ne doit pas créer de bibliothèque vide en remplacement d’un disque absent.
+These are real screenshots from an isolated demonstration library using licensed Unsplash sample images and demonstration metadata. They contain no user or private media. See the [screenshot provenance and credits](docs/screenshots/README.md).
 
-Les 3 920 originaux ont été comparés intégralement par SHA-256 avant bascule. Les IDs, notes et programmations de corbeille ont été conservés, avec relocation des chemins du catalogue, des imports et des résultats de similarité. Ces copies de sécurité sont des instantanés de la migration et ne suivent pas les ajouts ultérieurs. Les anciennes copies sont conservées dans `/home/francois/Salomé.before-usb-20261121-163824` et `data.before-usb-20261121-163824` : l’espace interne correspondant n’a pas encore été libéré. Les rapports et sauvegardes privées sont sous `qa/results/usb-migration/` (ignoré par Git).
+<p>
+  <img src="docs/screenshots/gallery-mobile.webp" width="260" alt="LUMEN gallery on a narrow mobile viewport">
+  <img src="docs/screenshots/similarity-stacks.webp" width="520" alt="LUMEN similarity results shown as layered photo stacks">
+</p>
+<p>
+  <img src="docs/screenshots/group-grid.webp" width="520" alt="Complete member grid opened from a LUMEN similarity stack">
+  <img src="docs/screenshots/viewer-desktop.webp" width="520" alt="LUMEN desktop viewer with the full photograph and metadata">
+</p>
 
 ## Features
 
-Filtres par menus : dossier (sous-dossiers inclus), type photo/vidéo, boîtier, objectif, format, période de prise de vue, plage ISO, note exacte de 0 à 4, imports et suppression programmée. L’API conserve aussi `q` (recherche textuelle) et `rating_min` ; le champ de recherche textuelle est volontairement absent de l’interface. Tri : date, nom, dossier A → Z ou Z → A, ISO, ouverture, focale et note. Les notes sont partagées dans cette galerie privée et persistées dans SQLite, sans écriture EXIF. Chaque nouveau média découvert ou importé reçoit 1 étoile ; les rescans conservent les notes choisies, y compris un zéro explicite. Le défaut historique du schéma reste inchangé pour éviter de réécrire les anciennes annotations : la valeur 1 est explicite dans l’insertion du catalogue. Les étoiles sélectionnées sont pleines et dorées ; les autres restent creuses, sur une bande translucide. Import depuis le navigateur dans data/uploads, jamais dans le dossier source ; le filtre Importés permet de les retrouver sans conflit avec les anciens filtres.
+- Responsive mixed photo/video gallery with folders, subtrees, pagination, and metadata-oriented filters.
+- Read-only originals for the web process; thumbnails, previews, video compatibility copies, databases, and uploads live in separate data areas.
+- JPEG, RAW, and video indexing through Pillow, vendored Perl ExifTool, and FFprobe. RAW files use embedded JPEG previews; LUMEN does not develop RAW data.
+- Native video playback with audio, seeking, HTTP Range support, and a cached FFmpeg compatibility copy when the browser cannot use the source directly.
+- Folder/subtree, camera, lens, format, date, ISO, media-type, import, scheduled-trash, and rating filters. The text-search API exists even though the current UI has no search field.
+- Four visible stars with integer ratings **0–4**, stored in SQLite and never written to EXIF. New discovered/imported media starts explicitly at 1; rescans preserve deliberate zero and higher ratings.
+- Browser uploads stored separately from the source tree, with an **Importés** (Imported) filter and a scan after accepted uploads.
+- Viewer with contain mode, keyboard/touch navigation, bounded pinch/double-tap zoom from 1× to 5×, and return-to-gallery position preservation.
+- File sharing through the browser sharing API when supported. RAW sharing can offer an explicit JPEG fallback; the operating-system share sheet is browser/device dependent.
+- Two local, non-destructive similarity views: perceptual near-duplicates and CLIP-based visual content similarity. Stacks open into a full group grid and return to the previous browsing position.
+- Explicit, recoverable trash scheduling rather than automatic deletion.
 
-Visionneuse : photo entière centrée par défaut, pinch-zoom de 1× à 5×, déplacement borné, double-tap et remise à zéro. Les gestes de zoom sont limités aux photos ; les vidéos conservent leurs commandes natives. Pas de téléchargement dans les vignettes ; l’icône de partage de la visionneuse appelle le partage natif de fichiers. Si le navigateur refuse le RAW, le partage d’un JPEG est proposé explicitement. Le partage natif iOS nécessite une confirmation sur appareil réel ; les tests Chromium valident l’appel et les octets transmis, pas l’interface système.
+LUMEN does **not** automatically delete originals, perform face recognition, send media to a cloud service, or silently replace a RAW original with a developed JPEG.
 
-RAW : extraction JpgFromRaw, puis PreviewImage ; les fichiers sans aperçu JPEG exploitable sont signalés comme erreurs de scan. Aucun dématriçage RAW. Miniatures limitées à 480 px et aperçus à 2048 px ; téléchargement = fichier original intégral.
+## Requirements
 
-Vidéo : les métadonnées sont lues avec `ffprobe` sans décoder/indexer la vidéo entière. Les aperçus JPEG sont produits par `ffmpeg` sur une image située à `min(1 seconde, durée × 0,1)` et mis en cache par chemin, taille et mtime de la source. Les MP4 H.264/AAC sont servis directement ; les MOV H.264/PCM sont remuxés en MP4 avec copie vidéo et audio AAC. Les codecs vidéo incompatibles nécessitent un encodeur `libx264` disponible. La copie de lecture ne conserve que la première piste audio (`0:a:0?`) : les pistes Apple spatiales/APAC supplémentaires de certains MOV ne sont pas copiées vers le MP4 navigateur. Le fichier original reste intégral, avec toutes ses pistes. Le flux `/api/photos/{id}/stream` accepte les requêtes HTTP Range.
+- Python **3.12** (tested runtime) and `uv`.
+- Perl and the vendored official ExifTool executable at `vendor/exiftool/exiftool`.
+- `ffmpeg` and `ffprobe` on `PATH`, or paths supplied through environment variables. FFmpeg needs `libx264` when an input must be transcoded.
+- Node.js only for JavaScript tests and syntax checks; there is no frontend build step.
 
-## Regroupement local par similarité
+## Install
 
-Deux vues indépendantes, sans déplacement ni suppression des originaux :
-
-- **Photos proches** : empreinte perceptuelle, couleur et proportions pour rapprocher doublons et variantes visuelles d’une prise de vue.
-- **Contenu similaire** : représentations CLIP calculées localement pour rapprocher les scènes et sujets visuellement apparentés. Ce n’est ni une reconnaissance d’identité ni une garantie que les photos montrent la même personne.
-
-Le menu « Regrouper » présente les groupes sous forme de piles de photos, avec une couverture et leur nombre d’images. Un clic ouvre la grille complète du groupe ; « Retour aux piles » restaure la position et les cartes déjà chargées. Les photos non regroupées et les vidéos restent des cartes individuelles. Les filtres sont appliqués avant le calcul des piles et leur pagination. « Analyser » calcule les deux modes en arrière-plan avec progression et annulation. Les vidéos restent dans « Autres médias ». Les filtres existants continuent à s’appliquer ; la pagination ne supprime aucun média. Les groupes sont des suggestions, jamais des décisions de suppression. Les membres doivent ressembler directement au représentant du groupe, sans chaînage transitif illimité.
-
-Les empreintes, vecteurs et groupes sont conservés séparément dans `data/similarity.sqlite3`. L’analyse suivante réutilise les entrées inchangées ; après un import ou une modification des sources, relancer l’analyse. Les notes et programmations de corbeille restent dans le catalogue existant. Les JPEG embarqués des RAW, déjà orientés par le cache média, servent à l’analyse ; pas de dématriçage ni d’envoi des images vers un service externe.
-
-Dépendances : NumPy et ONNX Runtime CPU dans `requirements.txt`. Le modèle quantifié CLIP ViT-B/32 est installé séparément sous `data/models/clip-vit-base-patch32/vision_model_quantized.onnx` ; aucune récupération automatique par le serveur. Version source : `Xenova/clip-vit-base-patch32`, révision `6b7c523703ae26e39be4b03774966f8571c7f523`. SHA-256 vérifié au chargement : `583fd1110a514667812fee7d684952aaf82a99b959760c8d7dca7e0ab9839299`.
-
-```bash
-mkdir -p data/models/clip-vit-base-patch32
-curl -fL --retry 2 \
-  https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/6b7c523703ae26e39be4b03774966f8571c7f523/onnx/vision_model_quantized.onnx \
-  -o data/models/clip-vit-base-patch32/vision_model_quantized.onnx
-sha256sum data/models/clip-vit-base-patch32/vision_model_quantized.onnx
-```
-
-API : `POST /api/similarity/analyze`, `GET /api/similarity/status`, `POST /api/similarity/cancel`, et `GET /api/photos?similarity=near` ou `similarity=content`. Ajouter `similarity_view=stacks` pour les résumés paginés en unités de cartes (`media_total` conserve le total des médias filtrés), ou `similarity_group=near:ID` / `content:ID` pour les membres d’un groupe, filtrés avant pagination. Les deux paramètres sont exclusifs et nécessitent un mode correspondant. Les mutations conservent les contrôles de session et d’Origin. Tests : `tests/test_embeddings.py`, `tests/test_similarity.py`, `tests/test_similarity_api.py` et `static/tests/similarity_regression.py`. Ce dernier vérifie la vraie instance et ne doit pas être lancé en prétendant qu’une analyse simulée valide les regroupements réels.
-
-## Requirements and setup
-
-Python 3.12 is the tested runtime. `uv` is recommended:
+From the repository root:
 
 ```bash
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -r requirements.txt
 ```
 
-The repository vendors the official Phil Harvey ExifTool source (13.59, downloaded from `https://github.com/exiftool/exiftool`) under `vendor/exiftool/`. It is invoked as `perl vendor/exiftool/exiftool`; no system ExifTool installation or sudo is required. Video support additionally requires the `ffmpeg` and `ffprobe` executables on `PATH` (or explicit `PHOTO_FFMPEG`/`PHOTO_FFPROBE` paths).
+ExifTool is invoked without a system package or `sudo`:
+
+```bash
+perl vendor/exiftool/exiftool -ver
+ffprobe -version
+ffmpeg -version
+```
+
+## Quick start on loopback
+
+Use an absolute source directory for the originals. This command binds only to loopback port `8093`:
+
+```bash
+PHOTO_ROOT='/absolute/path/to/photos' \
+PHOTO_DATA_DIR="$PWD/data" \
+.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8093
+```
+
+Open `http://127.0.0.1:8093/`. The health check is `/health`; FastAPI's interactive API documentation is `/docs`.
+
+Authentication is enabled by default. If `PHOTO_PASSWORD` is unset, a random password is generated once in `PHOTO_DATA_DIR/access-password` with mode `0600`; retrieve it privately to sign in, and never commit it or include it in logs, screenshots, issues, or documentation. The independent session-signing secret is generated in `PHOTO_DATA_DIR/session-secret` when not supplied explicitly.
+
+For an isolated private deployment only, `PHOTO_AUTH_REQUIRED=false` (also `0`, `no`, or `off`) disables the application login. Use that mode only behind a trusted private Tailscale network or reverse proxy; never expose it publicly. Origin protection for state-changing requests remains active.
+
+Tailscale is an optional network boundary, not a hosted LUMEN service. Media stays on the machine where the application and its data directories run.
 
 ## Configuration
 
-The backend reads these environment variables:
+Relative paths are resolved from the project directory. Database, upload and cache defaults follow `PHOTO_DATA_DIR` when it is changed.
 
-- `PHOTO_ROOT`: read-only source directory. The default is `data/uploads`.
-- `PHOTO_DATA_DIR`: runtime database, cache, and secret directory. The default is `data`.
-- `PHOTO_UPLOAD_DIR`: writable upload directory. The default is `PHOTO_DATA_DIR/uploads`.
-- `PHOTO_DB`: optional SQLite path. The default is `PHOTO_DATA_DIR/gallery.sqlite3`.
-- `PHOTO_PASSWORD`: optional gallery password. If absent, a random password is generated once in `PHOTO_DATA_DIR/access-password` with mode `0600`.
-- `PHOTO_SESSION_SECRET`: optional independent cookie-signing secret. If absent, it is generated in `PHOTO_DATA_DIR/session-secret` with mode `0600`.
-- `PHOTO_ALLOWED_HOSTS`: optional comma-separated explicit host allow-list for state-changing requests. Loopback, private/local IPs, Tailscale `100.64.0.0/10`, `*.ts.net`, `localhost`, and `testserver` are accepted by default.
-- `PHOTO_MAX_UPLOAD_BYTES`: per-file upload limit; defaults to 250 MiB.
-- `PHOTO_FFMPEG`: optional path to the FFmpeg executable; defaults to `ffmpeg` on `PATH`.
-- `PHOTO_FFPROBE`: optional path to the FFprobe executable; defaults to `ffprobe` on `PATH`.
-- Les notes persistantes utilisent la colonne SQLite `photos.rating` (0 à 4) via `PATCH /api/photos/{id}/rating` ; aucun fichier annexe ni réglage supplémentaire n’est requis.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PHOTO_ROOT` | `data/uploads` | Source directory scanned for media; keep originals read-only to the web process. |
+| `PHOTO_DATA_DIR` | `data` | Runtime directory for databases, cache, models, secrets, and trash. |
+| `PHOTO_UPLOAD_DIR` | `data/uploads` | Writable browser-upload directory; it can be separate from the source. |
+| `PHOTO_DB` | `data/gallery.sqlite3` | Main catalogue database. |
+| `PHOTO_CACHE_DIR` | `data/cache` | Generated image and video cache. |
+| `PHOTO_PASSWORD` | generated once | Optional gallery password. |
+| `PHOTO_SESSION_SECRET` | generated once | Optional independent cookie-signing secret. |
+| `PHOTO_AUTH_REQUIRED` | `true` | Require a signed session for the gallery and protected API routes. |
+| `PHOTO_MAX_UPLOAD_BYTES` | `262144000` (250 MiB) | Per-file browser upload limit, in bytes. |
+| `PHOTO_FFMPEG` | `ffmpeg` | Optional FFmpeg executable path. |
+| `PHOTO_FFPROBE` | `ffprobe` | Optional FFprobe executable path. |
+| `PHOTO_ALLOWED_HOSTS` | empty | Additional comma-separated hostnames accepted for state-changing requests; local/private and tailnet hosts are already allowed. |
 
-For the deployment source supplied by the parent worker:
+The scanner rejects paths escaping configured roots through symlinks. Uploads receive a random storage name while their original display name remains catalogue metadata. Human annotations are stored in SQLite, not source files.
+
+## Catalogue workflow
+
+1. Put media inside `PHOTO_ROOT` or use browser upload; keep runtime databases, caches, and trash out of the source directory.
+2. Run **Rescanner**, or authenticate and call `POST /api/scan`. Scanning is asynchronous and single-flight; wait for `GET /api/status` to finish.
+3. Uploads use `PHOTO_UPLOAD_DIR` and start a scan after accepted files. Use **Importés** (Imported) to distinguish them from source-root media.
+4. Similarity is a separate manual operation. After the catalogue scan, start **Analyser** or call `POST /api/similarity/analyze`; a newly indexed file is not automatically part of a completed analysis.
+5. Rescans preserve existing ratings and scheduled maintenance metadata, including when technical metadata is refreshed.
+
+## Media handling
+
+### Photos and RAW
+
+JPEGs are read directly. RAW files are inspected with the vendored ExifTool, which extracts `JpgFromRaw` or `PreviewImage` for thumbnails, previews, and local similarity analysis. There is no RAW demosaicing or cloud conversion; the original download remains the original file. Generated, orientation-aware JPEGs live in the cache and are not written back to source media.
+
+### Video
+
+LUMEN reads video metadata with `ffprobe` and presents videos in the same gallery and viewer as photographs. Native controls provide playback, audio, seeking, and optional fullscreen where supported; the stream endpoint supports HTTP Range requests.
+
+Browser-compatible MP4/H.264/AAC inputs can be served directly. Other supported inputs may be remuxed or transcoded with FFmpeg into a cached MP4 using `libx264` and a browser-friendly audio track. Compatibility files are derived data; the original video and its tracks are not replaced.
+
+### Ratings and annotations
+
+Ratings use four visible stars and the integer range `0..4`: selecting the active terminal star clears it to zero; a new discovered/imported item receives explicit rating `1`; rescans update technical metadata without overwriting an existing rating; deliberate `0`, `2`, `3`, and `4` remain intact. Exact-zero filters are valid and are not treated as empty input.
+
+## Local visual similarity
+
+Similarity is optional and stays local to the server. **Photos proches** (Near photos) use perceptual, colour, and aspect-ratio features for bursts, variants, and near-duplicates. **Contenu similaire** (Similar content) uses a local CLIP ViT-B/32 ONNX model on CPU for related scenes and subjects; it is not face recognition or identity matching.
+
+One **Analyser** action computes both modes after a manual catalogue scan; the modes use independent criteria, and unchanged feature signatures are reused. Videos, singletons, and unanalyzed media remain individual cards; trashed items and unsupported inputs are not eligible photograph members. Groups are suggestions only: they do not move, rename, rate, or delete originals.
+
+The model is an optional additional download; the server never downloads it automatically. Store it at `data/models/clip-vit-base-patch32/vision_model_quantized.onnx`. Source: `Xenova/clip-vit-base-patch32`, revision `6b7c523703ae26e39be4b03774966f8571c7f523`.
 
 ```bash
-export PHOTO_ROOT='/mnt/usb/LUMEN/Salomé'
+MODEL_DIR="${PHOTO_DATA_DIR:-$PWD/data}/models/clip-vit-base-patch32"
+MODEL_PATH="$MODEL_DIR/vision_model_quantized.onnx"
+mkdir -p "$MODEL_DIR"
+curl -fL --retry 2 \
+  'https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/6b7c523703ae26e39be4b03774966f8571c7f523/onnx/vision_model_quantized.onnx' \
+  -o "$MODEL_PATH"
+printf '%s  %s\n' \
+  '583fd1110a514667812fee7d684952aaf82a99b959760c8d7dca7e0ab9839299' \
+  "$MODEL_PATH" | sha256sum --check
 ```
 
-The scanner never writes to `PHOTO_ROOT`. It also rejects files whose resolved path escapes a configured root through a symlink. Uploads are stored under `PHOTO_UPLOAD_DIR` with a random storage name; the original filename is retained as database metadata.
+Similarity routes are `POST /api/similarity/analyze`, `GET /api/similarity/status`, `POST /api/similarity/cancel`, and `GET /api/photos?similarity=near` or `similarity=content`. Add `similarity_view=stacks` for paginated stacks, or a mode-specific `similarity_group` for a complete group grid. Return navigation preserves the previous stack/grid position.
 
-## Run
+## Recoverable trash
 
-```bash
-PHOTO_ROOT='/mnt/usb/LUMEN/Salomé' \
-  .venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8093
-```
-
-The backend can require signed HttpOnly SameSite-Strict sessions (default). This deployment explicitly uses `PHOTO_AUTH_REQUIRED=false`, so the browser opens directly without a password; Tailscale restricts network access. Cross-origin state-changing requests remain rejected in both modes.
-
-A scan is asynchronous and single-flight:
-
-```bash
-curl -c /tmp/lumen.cookies -H 'Content-Type: application/json' \
-  -d '{"password":"..."}' http://127.0.0.1:8093/api/login
-curl -b /tmp/lumen.cookies -X POST http://127.0.0.1:8093/api/scan
-curl -b /tmp/lumen.cookies http://127.0.0.1:8093/api/status
-```
-
-State-changing requests with an `Origin` header must match the request host origin. Cross-origin state changes are rejected.
-
-## Recoverable trash maintenance
-
-The web application never moves or deletes source media. `POST /api/deletions/schedule-zero` records one-month, calendar-clamped jobs for every catalogued zero-rated item; rating an item to at least 1 cancels its scheduled job. The scheduled metadata is joined into photo responses as `deletion_scheduled_at` and `delete_after`. `GET /api/deletions/status` and `GET /api/deletions/trash` expose maintenance status and recovery entries.
-
-The maintenance worker is a separate explicit CLI. It defaults to a read-only dry run and processes at most 100 due jobs per invocation:
+Trash is explicit and reversible: `POST /api/deletions/schedule-zero` schedules catalogue items rated `0`; the grace period is one calendar month, clamped to the target month end; raising a rating to at least `1` cancels the job; and a separate worker defaults to a read-only dry run. With explicit `--apply`, due items move atomically on the same filesystem to `PHOTO_DATA_DIR/trash/{uuid}/` with a recovery manifest. `--restore JOBID` restores one job and refuses to overwrite an existing destination.
 
 ```bash
 .venv/bin/python -m gallery.trash_worker --dry-run
-.venv/bin/python -m gallery.trash_worker --apply
-.venv/bin/python -m gallery.trash_worker --restore JOBID
+
+# Explicit opt-in only: move due originals to recoverable trash.
+# .venv/bin/python -m gallery.trash_worker --apply
+
+# Restore one reviewed job (replace JOBID).
+# .venv/bin/python -m gallery.trash_worker --restore JOBID
 ```
 
-Applied jobs use an atomic same-filesystem rename into `PHOTO_DATA_DIR/trash/{uuid}/`, with a recovery manifest; source size, mtime, realpath containment, symlink safety, current zero rating, and destination collisions are checked before a move. A changed or cross-filesystem source is recorded as an error without unlinking it. Restore is explicit by job ID and refuses to overwrite an existing original destination. The web app never starts deletion itself.
+The web process never moves or permanently deletes source media. The application never auto-enables a timer and no permanent purge is configured. `--apply` and `--restore` require a separate maintenance process with write access; the web service should retain read-only access to the source. Safety checks revalidate rating, path containment, symlinks, source size/mtime, same-filesystem movement, and destination collisions.
 
-Installed on this host: `ops/lumen-trash.service` and `ops/lumen-trash.timer`, symlinked under `~/.config/systemd/user/`. The hourly timer is currently inactive and not enabled; relocation preserved that existing policy. When explicitly activated, it runs the separate `--apply` maintenance command with write access restricted to gallery data and the configured source. The web unit keeps read-only access to the source. No permanent purge is configured.
+## API and authentication
 
-To inspect maintenance: `systemctl --user status lumen-trash.timer`, `journalctl --user -u lumen-trash.service -n 30`. To restore, load the same environment as the worker, then use the job ID from `GET /api/deletions/trash`:
+FastAPI's schema and interactive documentation are at `/docs`. Protected routes require a valid signed session when authentication is enabled, and state-changing requests continue to use host and `Origin` checks.
 
-```bash
-set -a
-source /home/francois/.config/lumen-gallery/gallery.env
-set +a
-.venv/bin/python -m gallery.trash_worker --restore JOBID
-```
+| Area | Routes |
+| --- | --- |
+| Health/session | `GET /health`, `GET /api/session`, `POST /api/login`, `POST /api/logout` |
+| Catalogue jobs | `POST /api/scan`, `GET /api/status`, `POST /api/upload` |
+| Browse | `GET /api/photos`, `GET /api/facets`, `GET /api/photos/{id}` |
+| Media | `GET /api/photos/{id}/thumb`, `/preview`, `/stream`, `/download` |
+| Annotations | `PATCH /api/photos/{id}/rating`, `POST /api/photos/{id}/deletion/cancel` |
+| Similarity | `GET /api/similarity/status`, `POST /api/similarity/analyze`, `POST /api/similarity/cancel` |
+| Trash | `POST /api/deletions/schedule-zero`, `GET /api/deletions/status`, `GET /api/deletions/trash` |
 
-## Test
+`/api/photos` supports media type, imported-only, directory/subtree, camera, lens, format, date, ISO, rating, scheduled-trash, sorting, pagination, and both similarity modes. The browser UI is the safer starting point for normal catalogue work because it keeps scan, analysis, filters, and viewer state together.
+
+## Tests
 
 ```bash
 .venv/bin/python -m pytest -q
+node --test static/tests
+node --check static/app.js
 ```
 
-The test suite creates real EXIF JPEGs and real FFmpeg-generated rotated MP4/MOV fixtures, exercises filtering/sorting/download/auth/upload/path containment/deletion/video Range streaming/source integrity, and scans the real rawpy Canon CR2 fixtures in `tests/fixtures/`. `RAW_CANON_40D_SRAW_V103.CR2` has SHA-256 `152382ce4dbf644899d12b41b4c577f07638aa3ec5745ac344c36bad93826125`; its embedded `PreviewImage` fallback is verified as a 1936x1288 JPEG. `M0054341_01_00005.cr2` has SHA-256 `add8183e643d98d5b07479d50bf5591838451d43449fd3399e2f146cf19beb8d` and verifies source EXIF orientation `3` is applied to the preview.
+Browser-oriented Python scripts under `static/tests` require a real running gallery with its intended configuration. Some change ratings or maintenance annotations and restore them; read each script before using it on a production catalogue. They do not replace device-level confirmation of the native iOS share sheet.
+
+## Architecture map
+
+- `app.py` — FastAPI application, authentication, API routes, media responses, and dependency wiring.
+- `gallery/` — configuration, SQLite catalogue, ExifTool integration, scanner, image/video cache, similarity analysis, and recoverable-trash worker.
+- `static/` — French HTML, CSS, browser application, and JavaScript tests.
+- `tests/` — Python unit/integration tests, including real media fixtures.
+- `ops/` — optional service and maintenance-unit examples; not required for the loopback command above.
+
+LUMEN is self-hosted: the server owns catalogue and media paths, while any Tailscale or reverse-proxy boundary is an operator-selected transport and access-control layer, not a hosted storage service.
