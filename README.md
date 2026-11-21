@@ -7,7 +7,7 @@ Galerie responsive en français pour photographes : planche-contact photo/vidéo
 - URL recommandée : https://arcturus.tail38ed6c.ts.net:9443 via Tailscale Serve (tailnet uniquement). La connexion et les miniatures ont été vérifiées via HTTPS dans Chromium mobile. Accès direct historique : http://100.90.227.52:8093.
 - Tailscale Serve 9443 relaie vers http://100.90.227.52:8093 ; les autres ports Serve restent inchangés. Uvicorn accepte les en-têtes proxy uniquement depuis 100.90.227.52 pour conserver schéma HTTPS, contrôle Origin et cookies Secure. Ne pas utiliser --no-proxy-headers derrière ce proxy.
 - Écoute limitée à l’adresse Tailscale, pas au LAN ni à Internet. HTTP est transporté dans le tunnel chiffré Tailscale.
-- Source en lecture seule : /home/francois/Salomé ; 3 882 photos découvertes (3 558 CR2, 324 JPEG) au dernier index. Les vidéos `.mov`, `.mp4`, `.m4v` et `.webm` sont indexées à partir des métadonnées ffprobe ; les aperçus sont extraits à la demande.
+- Source en lecture seule : /mnt/usb/LUMEN/Salomé. Catalogue actuel : 3 929 médias, dont 3 891 photos et 38 vidéos ; 9 médias proviennent des imports. Les vidéos `.mov`, `.mp4`, `.m4v` et `.webm` sont indexées à partir des métadonnées ffprobe ; les aperçus sont extraits à la demande.
 - Accès sans mot de passe applicatif : PHOTO_AUTH_REQUIRED=false. Tailscale constitue la frontière d’accès ; ne pas exposer cette instance sur Internet ou sur toutes les interfaces. Les protections Origin des actions restent actives. L’authentification reste activée par défaut si ce paramètre est absent.
 - Configuration : /home/francois/.config/lumen-gallery/gallery.env.
 - Service utilisateur : lumen-gallery.service, activé au démarrage de la session utilisateur. Linger est déjà actif sur cet hôte.
@@ -15,6 +15,14 @@ Galerie responsive en français pour photographes : planche-contact photo/vidéo
 - L’index SQLite et les aperçus sont dans data/, séparés des originaux. Le premier scan est déclenché ; les scans suivants se lancent avec « Réindexer » et ignorent les fichiers inchangés.
 - Le serveur web n’écrit jamais les originaux : son unité impose ReadOnlyPaths sur le dossier source. Seul le service de maintenance distinct peut déplacer vers la corbeille les fichiers explicitement programmés, à leur échéance, après nouvelle vérification de leur note.
 - Maintenance installée : `lumen-trash.timer` vérifie les échéances chaque heure, via `ops/lumen-trash.service`. Les unités utilisateur sont des liens vers `ops/`. Aucun effacement définitif ni vidage automatique de la corbeille.
+
+## Stockage USB actif
+
+Originaux : `/mnt/usb/LUMEN/Salomé`. Catalogue, imports, corbeille, modèles et caches : `/mnt/usb/LUMEN/data`. L’application et son environnement Python restent sur le disque interne. Les anciens chemins `/home/francois/Salomé` et `data` sont des liens de compatibilité vers le stockage USB.
+
+Le montage Btrfs utilise l’UUID `b451a1d2-ed01-4017-93a2-d6fde8a4367f` via `/etc/fstab` avec automontage systemd. Les surcharges suivies dans `ops/lumen-gallery-usb.conf` et `ops/lumen-trash-usb.conf` sont liées dans les répertoires `.service.d/` des unités utilisateur : elles imposent le disque attendu, un marqueur de stockage, les originaux en lecture seule pour le serveur et les seules zones d’écriture nécessaires. Le serveur ne doit pas créer de bibliothèque vide en remplacement d’un disque absent.
+
+Les 3 920 originaux ont été comparés intégralement par SHA-256 avant bascule. Les IDs, notes et programmations de corbeille ont été conservés, avec relocation des chemins du catalogue, des imports et des résultats de similarité. Les anciennes copies sont conservées dans `/home/francois/Salomé.before-usb-20261121-163824` et `data.before-usb-20261121-163824` : l’espace interne correspondant n’a pas encore été libéré. Les rapports et sauvegardes privées sont sous `qa/results/usb-migration/` (ignoré par Git).
 
 ## Features
 
@@ -25,6 +33,29 @@ Visionneuse : photo entière centrée par défaut, pinch-zoom de 1× à 5×, dé
 RAW : extraction JpgFromRaw, puis PreviewImage ; les fichiers sans aperçu JPEG exploitable sont signalés comme erreurs de scan. Aucun dématriçage RAW. Miniatures limitées à 480 px et aperçus à 2048 px ; téléchargement = fichier original intégral.
 
 Vidéo : les métadonnées sont lues avec `ffprobe` sans décoder/indexer la vidéo entière. Les aperçus JPEG sont produits par `ffmpeg` sur une image située à `min(1 seconde, durée × 0,1)` et mis en cache par chemin, taille et mtime de la source. Les MP4 H.264/AAC sont servis directement ; les MOV H.264/PCM sont remuxés en MP4 avec copie vidéo et audio AAC. Les codecs vidéo incompatibles nécessitent un encodeur `libx264` disponible. Le flux `/api/photos/{id}/stream` accepte les requêtes HTTP Range.
+
+## Regroupement local par similarité
+
+Deux vues indépendantes, sans déplacement ni suppression des originaux :
+
+- **Photos proches** : empreinte perceptuelle, couleur et proportions pour rapprocher doublons et variantes visuelles d’une prise de vue.
+- **Contenu similaire** : représentations CLIP calculées localement pour rapprocher les scènes et sujets visuellement apparentés. Ce n’est ni une reconnaissance d’identité ni une garantie que les photos montrent la même personne.
+
+Le menu « Regrouper » active une vue ; « Analyser » calcule les deux modes en arrière-plan avec progression et annulation. Les vidéos restent dans « Autres médias ». Les filtres existants continuent à s’appliquer ; la pagination ne supprime aucun média. Les groupes sont des suggestions, jamais des décisions de suppression. Les membres doivent ressembler directement au représentant du groupe, sans chaînage transitif illimité.
+
+Les empreintes, vecteurs et groupes sont conservés séparément dans `data/similarity.sqlite3`. L’analyse suivante réutilise les entrées inchangées ; après un import ou une modification des sources, relancer l’analyse. Les notes et programmations de corbeille restent dans le catalogue existant. Les JPEG embarqués des RAW, déjà orientés par le cache média, servent à l’analyse ; pas de dématriçage ni d’envoi des images vers un service externe.
+
+Dépendances : NumPy et ONNX Runtime CPU dans `requirements.txt`. Le modèle quantifié CLIP ViT-B/32 est installé séparément sous `data/models/clip-vit-base-patch32/vision_model_quantized.onnx` ; aucune récupération automatique par le serveur. Version source : `Xenova/clip-vit-base-patch32`, révision `6b7c523703ae26e39be4b03774966f8571c7f523`. SHA-256 vérifié au chargement : `583fd1110a514667812fee7d684952aaf82a99b959760c8d7dca7e0ab9839299`.
+
+```bash
+mkdir -p data/models/clip-vit-base-patch32
+curl -fL --retry 2 \
+  https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/6b7c523703ae26e39be4b03774966f8571c7f523/onnx/vision_model_quantized.onnx \
+  -o data/models/clip-vit-base-patch32/vision_model_quantized.onnx
+sha256sum data/models/clip-vit-base-patch32/vision_model_quantized.onnx
+```
+
+API : `POST /api/similarity/analyze`, `GET /api/similarity/status`, `POST /api/similarity/cancel`, et `GET /api/photos?similarity=near` ou `similarity=content`. Les mutations conservent les contrôles de session et d’Origin. Tests : `tests/test_embeddings.py`, `tests/test_similarity.py`, `tests/test_similarity_api.py` et `static/tests/similarity_regression.py`. Ce dernier vérifie la vraie instance et ne doit pas être lancé en prétendant qu’une analyse simulée valide les regroupements réels.
 
 ## Requirements and setup
 
@@ -56,7 +87,7 @@ The backend reads these environment variables:
 For the deployment source supplied by the parent worker:
 
 ```bash
-export PHOTO_ROOT='/home/francois/Salomé'
+export PHOTO_ROOT='/mnt/usb/LUMEN/Salomé'
 ```
 
 The scanner never writes to `PHOTO_ROOT`. It also rejects files whose resolved path escapes a configured root through a symlink. Uploads are stored under `PHOTO_UPLOAD_DIR` with a random storage name; the original filename is retained as database metadata.
@@ -64,7 +95,7 @@ The scanner never writes to `PHOTO_ROOT`. It also rejects files whose resolved p
 ## Run
 
 ```bash
-PHOTO_ROOT='/home/francois/Salomé' \
+PHOTO_ROOT='/mnt/usb/LUMEN/Salomé' \
   .venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8093
 ```
 
@@ -95,7 +126,7 @@ The maintenance worker is a separate explicit CLI. It defaults to a read-only dr
 
 Applied jobs use an atomic same-filesystem rename into `PHOTO_DATA_DIR/trash/{uuid}/`, with a recovery manifest; source size, mtime, realpath containment, symlink safety, current zero rating, and destination collisions are checked before a move. A changed or cross-filesystem source is recorded as an error without unlinking it. Restore is explicit by job ID and refuses to overwrite an existing original destination. The web app never starts deletion itself.
 
-Installed on this host: `ops/lumen-trash.service` and `ops/lumen-trash.timer`, symlinked under `~/.config/systemd/user/`. The enabled hourly timer runs the separate `--apply` maintenance command with write access restricted to gallery data and the configured source. The web unit keeps read-only access to the source. No permanent purge is configured.
+Installed on this host: `ops/lumen-trash.service` and `ops/lumen-trash.timer`, symlinked under `~/.config/systemd/user/`. The hourly timer is currently inactive and not enabled; relocation preserved that existing policy. When explicitly activated, it runs the separate `--apply` maintenance command with write access restricted to gallery data and the configured source. The web unit keeps read-only access to the source. No permanent purge is configured.
 
 To inspect maintenance: `systemctl --user status lumen-trash.timer`, `journalctl --user -u lumen-trash.service -n 30`. To restore, load the same environment as the worker, then use the job ID from `GET /api/deletions/trash`:
 

@@ -17,6 +17,12 @@
 
   const MEDIA_TYPES = new Set(['photo', 'video']);
 
+  const SIMILARITY_MODES = new Set(['near', 'content']);
+  const SIMILARITY_LABELS = Object.freeze({
+    near: 'Photos proches',
+    content: 'Contenu similaire',
+  });
+
   const QUERY_FIELDS = [
     ['mediaType', 'media_type'],
     ['importedOnly', 'imported_only'],
@@ -35,6 +41,11 @@
 
   function isPresent(value) {
     return value !== undefined && value !== null && value !== '';
+  }
+
+  function normaliseSimilarity(value) {
+    const candidate = typeof value === 'string' ? value.trim() : value;
+    return SIMILARITY_MODES.has(candidate) ? candidate : '';
   }
 
   function normaliseRating(value) {
@@ -159,6 +170,45 @@
       && items.every((item) => item.media_type === requested);
   }
 
+  function similarityGroupValue(item = {}, mode = '') {
+    const selectedMode = normaliseSimilarity(mode);
+    if (!selectedMode || mediaTypeOf(item) === 'video') {
+      return null;
+    }
+    const group = typeof item?.similarity_group === 'string' ? item.similarity_group : '';
+    const prefix = `${selectedMode}:`;
+    const size = Number(item?.similarity_size);
+    if (!group.startsWith(prefix) || group.length <= prefix.length) {
+      return null;
+    }
+    if (!Number.isInteger(size) || size < 2) {
+      return null;
+    }
+    return group;
+  }
+
+  function similaritySectionKey(item = {}, mode = '') {
+    return similarityGroupValue(item, mode) || 'ungrouped';
+  }
+
+  function similarityGroupBoundary(previous, current, mode = '') {
+    if (!normaliseSimilarity(mode) || !current) {
+      return false;
+    }
+    if (!previous) {
+      return true;
+    }
+    return similaritySectionKey(previous, mode) !== similaritySectionKey(current, mode);
+  }
+
+  function similarityGroupTitle(item = {}, mode = '') {
+    const selectedMode = normaliseSimilarity(mode);
+    const label = SIMILARITY_LABELS[selectedMode] || 'Médias similaires';
+    const rawSize = Number(item?.similarity_size);
+    const size = Number.isInteger(rawSize) && rawSize >= 0 ? rawSize : 0;
+    return `${label} · ${size} ${size === 1 ? 'image' : 'images'}`;
+  }
+
   function buildPhotoQuery(filters = {}) {
     const pairs = [];
     for (const [source, target] of QUERY_FIELDS) {
@@ -192,6 +242,11 @@
         continue;
       }
       pairs.push(`${target}=${encodeURIComponent(String(value).trim())}`);
+    }
+
+    const similarity = normaliseSimilarity(filters.similarity);
+    if (similarity) {
+      pairs.push(`similarity=${encodeURIComponent(similarity)}`);
     }
 
     const sort = SORTS.has(filters.sort) ? filters.sort : 'date_desc';
@@ -697,6 +752,10 @@
     formatDeletionDueDate,
     sessionPresentation,
     buildExifRows,
+    normaliseSimilarity,
+    similaritySectionKey,
+    similarityGroupBoundary,
+    similarityGroupTitle,
     shareFileName,
     shareFileType,
     isRawMedia,
@@ -716,6 +775,7 @@
 
   const PAGE_SIZE = 24;
   const POLL_INTERVAL = 1800;
+  const SIMILARITY_POLL_INTERVAL = 1500;
   const state = {
     authenticated: false,
     sessionLabel: 'connecté',
@@ -732,6 +792,12 @@
     statusSequence: 0,
     statusTimer: null,
     statusRunning: null,
+    similarityStatusRequest: null,
+    similarityStatusSequence: 0,
+    similarityStatusTimer: null,
+    similarityRunning: null,
+    similarityStatus: null,
+    similarityCancelRequested: false,
     deletionSummaryRequest: null,
     deletionSummarySequence: 0,
     deletionSummaryTimer: null,
@@ -808,6 +874,11 @@
     importedOnlyFilter: document.getElementById('imported-only-filter'),
     ratingFilter: document.getElementById('rating-filter'),
     deletionStatusFilter: document.getElementById('deletion-status-filter'),
+    similaritySelect: document.getElementById('similarity-select'),
+    similarityAnalyze: document.getElementById('similarity-analyze'),
+    similarityCancel: document.getElementById('similarity-cancel'),
+    similarityStatus: document.getElementById('similarity-status'),
+    similarityStatusText: document.getElementById('similarity-status-text'),
     gridSize: document.getElementById('grid-size'),
     gridSizeValue: document.getElementById('grid-size-value'),
     filtersForm: document.getElementById('filters-form'),
@@ -880,6 +951,8 @@
     }
     if (element === dom.scanStatus && dom.scanStatusText) {
       dom.scanStatusText.textContent = message || '';
+    } else if (element === dom.similarityStatus && dom.similarityStatusText) {
+      dom.similarityStatusText.textContent = message || '';
     } else {
       element.textContent = message || '';
     }
@@ -938,9 +1011,17 @@
   }
 
   function cancelPendingRequests() {
-    [state.photosRequest, state.facetsRequest, state.statusRequest, state.deletionSummaryRequest, state.lightboxRequest]
+    [
+      state.photosRequest,
+      state.facetsRequest,
+      state.statusRequest,
+      state.similarityStatusRequest,
+      state.deletionSummaryRequest,
+      state.lightboxRequest,
+    ]
       .filter(Boolean)
       .forEach((controller) => controller.abort());
+    stopSimilarityPolling();
     if (state.deletionSummaryTimer !== null) {
       window.clearTimeout(state.deletionSummaryTimer);
       state.deletionSummaryTimer = null;
@@ -948,6 +1029,7 @@
     state.photosSequence += 1;
     state.facetsSequence += 1;
     state.statusSequence += 1;
+    state.similarityStatusSequence += 1;
     state.deletionSummarySequence += 1;
     state.lightboxSequence += 1;
   }
@@ -957,6 +1039,9 @@
     state.authenticated = false;
     state.sessionLabel = 'connecté';
     stopStatusPolling();
+    state.similarityRunning = null;
+    state.similarityStatus = null;
+    state.similarityCancelRequested = false;
     if (dom.lightbox.open || dom.lightbox.hasAttribute('open')) {
       closeLightbox();
     }
@@ -983,6 +1068,7 @@
     void loadFacets();
     void loadPhotos({ reset: true });
     void refreshStatus();
+    void refreshSimilarityStatus();
     void refreshDeletionSummary();
   }
 
@@ -1002,6 +1088,7 @@
       importedOnly: dom.importedOnlyFilter.checked,
       rating: dom.ratingFilter.value,
       deletionStatus: dom.deletionStatusFilter.value,
+      similarity: dom.similaritySelect?.value || '',
       offset: state.offset,
       limit: PAGE_SIZE,
     };
@@ -1022,6 +1109,9 @@
     dom.mediaTypeSelect.value = '';
     dom.ratingFilter.value = '';
     dom.deletionStatusFilter.value = '';
+    if (dom.similaritySelect) {
+      dom.similaritySelect.value = '';
+    }
     dom.directorySelect.value = '';
     dom.cameraSelect.value = '';
     dom.lensSelect.value = '';
@@ -1050,6 +1140,10 @@
     if (normaliseDeletionStatus(params.get('deletion_status'))) {
       dom.deletionStatusFilter.value = 'scheduled';
     }
+    const similarity = normaliseSimilarity(params.get('similarity'));
+    if (similarity && dom.similaritySelect) {
+      dom.similaritySelect.value = similarity;
+    }
   }
 
   function updateFilterCount() {
@@ -1058,6 +1152,7 @@
       dom.importedOnlyFilter.checked ? 'true' : '',
       dom.ratingFilter.value,
       dom.deletionStatusFilter.value,
+      dom.similaritySelect?.value || '',
       dom.directorySelect.value,
       dom.cameraSelect.value,
       dom.lensSelect.value,
@@ -1523,13 +1618,31 @@
     return card;
   }
 
+  function makeSimilarityGroupHeading(photo, mode) {
+    const group = similaritySectionKey(photo, mode);
+    const heading = textElement('div', 'similarity-group-heading');
+    heading.dataset.similarityGroup = group;
+    heading.dataset.groupId = group;
+    const title = group === 'ungrouped'
+      ? 'Autres médias'
+      : similarityGroupTitle(photo, mode);
+    heading.append(textElement('h3', 'similarity-group-heading__title', title));
+    return heading;
+  }
+
   function renderGallery({ reset = true } = {}) {
     const existingCount = reset ? 0 : dom.gallery.querySelectorAll('.photo-card').length;
+    const similarityMode = normaliseSimilarity(dom.similaritySelect?.value);
     if (reset) {
       dom.gallery.replaceChildren();
     }
+    dom.gallery.classList.toggle('gallery-grid--grouped', Boolean(similarityMode));
     state.items.slice(existingCount).forEach((photo, index) => {
-      dom.gallery.append(makePhotoCard(photo, index + existingCount));
+      const itemIndex = index + existingCount;
+      if (similarityMode && similarityGroupBoundary(state.items[itemIndex - 1], photo, similarityMode)) {
+        dom.gallery.append(makeSimilarityGroupHeading(photo, similarityMode));
+      }
+      dom.gallery.append(makePhotoCard(photo, itemIndex));
     });
     updateResultsMeta();
     if (state.items.length === 0) {
@@ -1720,6 +1833,212 @@
       } else if (!dom.scanStatus.classList.contains('is-error')) {
         setMessage(dom.scanStatus, '');
       }
+    }
+  }
+
+  function similarityErrors(payload = {}) {
+    return Array.isArray(payload.errors) ? payload.errors : [];
+  }
+
+  function similarityNumber(payload, key, fallback = 0) {
+    const value = finiteNumber(payload?.[key]);
+    return value === null || value < 0 ? fallback : value;
+  }
+
+  function similarityHasResult(payload = {}) {
+    const groups = payload?.groups && typeof payload.groups === 'object' ? payload.groups : {};
+    return similarityNumber(payload, 'analyzed') > 0
+      || similarityNumber(payload, 'cached') > 0
+      || similarityNumber(groups, 'near') > 0
+      || similarityNumber(groups, 'content') > 0;
+  }
+
+  function similarityErrorSummary(errors) {
+    const messages = errors.map(errorValue).filter(Boolean).slice(0, 2);
+    if (!messages.length) {
+      return '';
+    }
+    return ` · ${messages.join(' · ')}`;
+  }
+
+  function renderSimilarityStatus(payload = {}) {
+    const running = Boolean(payload.running);
+    const errors = similarityErrors(payload);
+    const processed = similarityNumber(payload, 'processed');
+    const total = finiteNumber(payload.total);
+    const cached = similarityNumber(payload, 'cached');
+    const analyzed = similarityNumber(payload, 'analyzed');
+    const cancelled = payload.cancelled === true;
+    state.similarityRunning = running;
+    state.similarityStatus = payload;
+
+    if (dom.similarityAnalyze) {
+      dom.similarityAnalyze.textContent = similarityHasResult(payload)
+        ? 'Actualiser l’analyse'
+        : 'Analyser';
+      dom.similarityAnalyze.disabled = running;
+      if (running) {
+        dom.similarityAnalyze.setAttribute('aria-busy', 'true');
+      } else {
+        dom.similarityAnalyze.removeAttribute('aria-busy');
+      }
+    }
+    if (dom.similarityCancel) {
+      dom.similarityCancel.hidden = !running;
+      dom.similarityCancel.disabled = !running;
+      dom.similarityCancel.removeAttribute('aria-busy');
+    }
+
+    if (!dom.similarityStatus) {
+      return;
+    }
+
+    let message = '';
+    let kind = 'info';
+    if (running) {
+      message = total === null
+        ? `Analyse en cours · ${processed} traité${processed === 1 ? '' : 's'}`
+        : `Analyse en cours · ${processed} / ${total}`;
+      if (cached > 0) {
+        message += ` · ${cached} en cache`;
+      }
+      if (errors.length) {
+        message += ` · ${errors.length} erreur${errors.length === 1 ? '' : 's'}${similarityErrorSummary(errors)}`;
+      }
+    } else if (errors.length) {
+      kind = 'error';
+      message = `Analyse terminée avec ${errors.length} erreur${errors.length === 1 ? '' : 's'}${similarityErrorSummary(errors)}`;
+    } else if (cancelled) {
+      message = `Analyse interrompue · ${analyzed} analysé${analyzed === 1 ? '' : 's'}`;
+    } else if (analyzed > 0) {
+      kind = 'success';
+      message = `Analyse prête · ${analyzed} analysé${analyzed === 1 ? '' : 's'}`;
+    } else if (payload.updated_at) {
+      message = 'Analyse terminée sans résultat.';
+    } else {
+      message = 'Analyse en attente.';
+    }
+    setMessage(dom.similarityStatus, message, kind);
+  }
+
+  function stopSimilarityPolling() {
+    if (state.similarityStatusTimer !== null) {
+      window.clearTimeout(state.similarityStatusTimer);
+      state.similarityStatusTimer = null;
+    }
+  }
+
+  function scheduleSimilarityPoll() {
+    stopSimilarityPolling();
+    if (!state.authenticated || state.similarityRunning !== true) {
+      return;
+    }
+    state.similarityStatusTimer = window.setTimeout(() => {
+      state.similarityStatusTimer = null;
+      void refreshSimilarityStatus({ poll: true });
+    }, SIMILARITY_POLL_INTERVAL);
+  }
+
+  async function refreshSimilarityStatus({ poll = false } = {}) {
+    if (!state.authenticated || (!dom.similarityStatus && !dom.similarityAnalyze && !dom.similarityCancel)) {
+      return;
+    }
+    if (state.similarityStatusRequest) {
+      state.similarityStatusRequest.abort();
+    }
+    const controller = new AbortController();
+    state.similarityStatusRequest = controller;
+    const sequence = ++state.similarityStatusSequence;
+    const wasRunning = state.similarityRunning === true;
+    try {
+      const payload = await fetchJson('/api/similarity/status', { signal: controller.signal });
+      if (sequence !== state.similarityStatusSequence || controller.signal.aborted) {
+        return;
+      }
+      const running = Boolean(payload?.running);
+      const cancelRequested = state.similarityCancelRequested;
+      renderSimilarityStatus(payload || {});
+      if (running) {
+        scheduleSimilarityPoll();
+      } else {
+        stopSimilarityPolling();
+        state.similarityCancelRequested = false;
+        if (
+          wasRunning
+          && !cancelRequested
+          && payload?.cancelled !== true
+          && normaliseSimilarity(dom.similaritySelect?.value)
+        ) {
+          await refreshPhotosPreservingScroll();
+        }
+      }
+    } catch (error) {
+      if (controller.signal.aborted || sequence !== state.similarityStatusSequence) {
+        return;
+      }
+      setMessage(
+        dom.similarityStatus,
+        displayErrorMessage(error, 'Le statut de similarité est indisponible.'),
+        'error',
+      );
+      if (state.similarityRunning === true) {
+        scheduleSimilarityPoll();
+      } else if (!poll) {
+        stopSimilarityPolling();
+      }
+    } finally {
+      if (state.similarityStatusRequest === controller) {
+        state.similarityStatusRequest = null;
+      }
+    }
+  }
+
+  async function startSimilarityAnalysis() {
+    if (!dom.similarityAnalyze || dom.similarityAnalyze.disabled || state.similarityRunning === true) {
+      return;
+    }
+    state.similarityCancelRequested = false;
+    dom.similarityAnalyze.disabled = true;
+    dom.similarityAnalyze.setAttribute('aria-busy', 'true');
+    setMessage(dom.similarityStatus, 'Analyse en cours…', 'info');
+    try {
+      await fetchJson('/api/similarity/analyze', { method: 'POST' });
+      state.similarityRunning = true;
+      renderSimilarityStatus({ ...(state.similarityStatus || {}), running: true, cancelled: false });
+      scheduleSimilarityPoll();
+      await refreshSimilarityStatus();
+    } catch (error) {
+      state.similarityRunning = false;
+      setMessage(dom.similarityStatus, displayErrorMessage(error, 'L’analyse n’a pas pu démarrer.'), 'error');
+      if (dom.similarityCancel) {
+        dom.similarityCancel.hidden = true;
+        dom.similarityCancel.disabled = true;
+        dom.similarityCancel.removeAttribute('aria-busy');
+      }
+    } finally {
+      if (state.similarityRunning !== true) {
+        dom.similarityAnalyze.disabled = false;
+        dom.similarityAnalyze.removeAttribute('aria-busy');
+      }
+    }
+  }
+
+  async function cancelSimilarityAnalysis() {
+    if (!dom.similarityCancel || dom.similarityCancel.disabled || state.similarityRunning !== true) {
+      return;
+    }
+    state.similarityCancelRequested = true;
+    dom.similarityCancel.disabled = true;
+    dom.similarityCancel.setAttribute('aria-busy', 'true');
+    try {
+      await fetchJson('/api/similarity/cancel', { method: 'POST' });
+      await refreshSimilarityStatus();
+    } catch (error) {
+      state.similarityCancelRequested = false;
+      dom.similarityCancel.disabled = false;
+      setMessage(dom.similarityStatus, displayErrorMessage(error, 'L’arrêt de l’analyse a échoué.'), 'error');
+    } finally {
+      dom.similarityCancel.removeAttribute('aria-busy');
     }
   }
 
@@ -3206,6 +3525,13 @@
     dom.mediaTypeSelect.addEventListener('change', onFilterChanged);
     dom.importedOnlyFilter.addEventListener('change', onFilterChanged);
     dom.filtersForm.addEventListener('change', onFilterChanged);
+    dom.similaritySelect?.addEventListener('change', onFilterChanged);
+    dom.similarityAnalyze?.addEventListener('click', () => {
+      void startSimilarityAnalysis();
+    });
+    dom.similarityCancel?.addEventListener('click', () => {
+      void cancelSimilarityAnalysis();
+    });
     dom.gridSize.addEventListener('input', updateGridSize);
     dom.loadMore.addEventListener('click', () => loadPhotos({ reset: false }));
     dom.scheduleZeroButton.addEventListener('click', () => {

@@ -443,6 +443,7 @@ h3 {
 
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: stretch;
   gap: 0.7rem;
   padding: 0.7rem;
@@ -508,6 +509,34 @@ h3 {
   width: 6.8rem;
   padding: 0 1.7rem 0 0;
   appearance: none;
+}
+
+.similarity-field {
+  flex: 1 1 12rem;
+  gap: 0.45rem;
+  padding: 0 0.7rem;
+}
+
+.similarity-label {
+  color: var(--muted);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.similarity-field select {
+  width: auto;
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 0 1.7rem 0 0;
+  appearance: none;
+}
+
+#similarity-analyze,
+#similarity-cancel {
+  flex: 0 1 auto;
+  white-space: nowrap;
 }
 
 select option {
@@ -635,6 +664,17 @@ select option {
   border-left: 1px solid var(--ochre);
   color: var(--ochre-soft);
   font-size: 0.74rem;
+}
+
+.similarity-status {
+  display: block;
+  max-width: 100%;
+  margin: 0.55rem 0 0;
+  padding-left: 0.8rem;
+  border-left: 1px solid var(--ochre);
+  overflow-wrap: anywhere;
+  color: var(--ochre-soft);
+  font-size: 0.72rem;
 }
 
 .status-pulse {
@@ -929,6 +969,34 @@ select option {
   grid-template-columns: repeat(auto-fill, minmax(min(var(--tile-size), 100%), 1fr));
   align-items: start;
   gap: clamp(1.3rem, 2.1vw, 2.5rem) clamp(0.75rem, 1.15vw, 1.45rem);
+}
+
+.gallery-grid--grouped {
+  grid-auto-flow: row;
+}
+
+.similarity-group-heading {
+  display: flex;
+  min-width: 0;
+  grid-column: 1 / -1;
+  grid-row: span 3;
+  min-height: 3rem;
+  align-items: center;
+  padding: 0.65rem 0.15rem 0.35rem;
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.similarity-group-heading__title {
+  min-width: 0;
+  margin: 0;
+  color: var(--ochre-soft);
+  font-family: var(--sans);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  line-height: 1.25;
+  text-transform: uppercase;
 }
 
 .photo-card {
@@ -1914,6 +1982,14 @@ select option {
 
   .sort-field select {
     width: 100%;
+  }
+
+  .similarity-field {
+    flex-basis: 100%;
+  }
+
+  .similarity-field select {
+    width: auto;
   }
 
   .grid-size-control {

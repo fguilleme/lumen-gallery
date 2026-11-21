@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#101112">
     <meta name="description" content="LUMEN — archive de médias privée.">
     <title>LUMEN · Archive de médias</title>
-    <link rel="stylesheet" href="/static/style.css?v=20261121-directories2">
+    <link rel="stylesheet" href="/static/style.css?v=20261121-similarity2">
   </head>
   <body>
     <a class="skip-link" href="#main-content">Aller au contenu</a>
@@ -96,6 +96,16 @@
                 <input id="imported-only-filter" type="checkbox">
                 <span class="media-type-label">Importés</span>
               </label>
+              <label class="similarity-field sort-field" for="similarity-select">
+                <span class="similarity-label">Regrouper</span>
+                <select id="similarity-select" aria-label="Regrouper">
+                  <option value="">Sans regroupement</option>
+                  <option value="near">Photos proches</option>
+                  <option value="content">Contenu similaire</option>
+                </select>
+              </label>
+              <button id="similarity-analyze" class="button button--outline button--compact" type="button">Analyser</button>
+              <button id="similarity-cancel" class="button button--text button--compact" type="button" hidden>Annuler</button>
               <label class="grid-size-control" for="grid-size">
                 <span class="grid-size-icon" aria-hidden="true">▦</span>
                 <span class="visually-hidden">Taille de la grille</span>
@@ -175,6 +185,9 @@
             <p id="scan-status" class="inline-message scan-status" aria-live="polite" hidden>
               <span class="status-pulse" aria-hidden="true"></span>
               <span id="scan-status-text"></span>
+            </p>
+            <p id="similarity-status" class="inline-message similarity-status" aria-live="polite" hidden>
+              <span id="similarity-status-text"></span>
             </p>
           </section>
 
@@ -323,6 +336,6 @@
     <noscript>
       <div class="noscript-note">LUMEN a besoin de JavaScript pour afficher votre archive.</div>
     </noscript>
-    <script src="/static/app.js?v=20261121-directories2"></script>
+    <script src="/static/app.js?v=20261121-similarity2"></script>
   </body>
 </html>

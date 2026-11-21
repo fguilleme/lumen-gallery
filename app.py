@@ -29,6 +29,7 @@ from gallery.db import (
 from gallery.exif import SUPPORTED_EXTENSIONS, ExifTool
 from gallery.media import MediaCache, MediaConversionError, MediaNotFound, resolve_photo_path
 from gallery.scanner import ScanManager
+from gallery.similarity import SimilarityManager
 
 
 SESSION_COOKIE = "lumen_session"
@@ -139,6 +140,8 @@ def _item(row: dict[str, Any]) -> dict[str, Any]:
         "media_type": media_type,
         "duration": row.get("duration"),
         "rating": int(row["rating"]),
+        "similarity_group": row.get("similarity_group"),
+        "similarity_size": int(row.get("similarity_size") or 0),
         "deletion_scheduled_at": row.get("deletion_scheduled_at"),
         "delete_after": row.get("delete_after"),
         "date": str(row["date"]),
@@ -256,6 +259,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.lumen_database = database
     app.state.lumen_scanner = scanner
     app.state.lumen_media = media
+    similarity_manager = SimilarityManager(settings, database, media)
+    app.state.lumen_similarity = similarity_manager
 
     def require_session(request: Request) -> None:
         if not settings.auth_required:
@@ -353,6 +358,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         items = database.list_trash_jobs()
         return {"items": items, "total": len(items)}
 
+    @app.get("/api/similarity/status")
+    def similarity_status(_: None = Depends(require_session)) -> dict[str, Any]:
+        return similarity_manager.snapshot()
+
+    @app.post("/api/similarity/analyze", dependencies=[Depends(_check_state_change)])
+    def similarity_analyze(_: None = Depends(require_session)) -> dict[str, Any]:
+        started = similarity_manager.start()
+        return {"started": started, **similarity_manager.snapshot()}
+
+    @app.post("/api/similarity/cancel", dependencies=[Depends(_check_state_change)])
+    def similarity_cancel(_: None = Depends(require_session)) -> dict[str, Any]:
+        similarity_manager.cancel()
+        return similarity_manager.snapshot()
+
     @app.get("/api/photos")
     def photos(
         q: str | None = None,
@@ -362,6 +381,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         media_type: Literal["photo", "video"] | None = Query(None),
         imported_only: bool = Query(False),
         directory: str | None = Query(None),
+        similarity: Literal["near", "content"] | None = Query(None),
         date_from: str | None = None,
         date_to: str | None = None,
         iso_min: float | None = None,
@@ -392,9 +412,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             rating_min=rating_min,
             deletion_status=deletion_status,
             sort=sort,
-            offset=offset,
-            limit=limit,
+            offset=0 if similarity else offset,
+            limit=1000000000 if similarity else limit,
         )
+        if similarity:
+            rows = similarity_manager.annotate_and_sort(rows, similarity)[offset:offset + limit]
         return {"items": [_item(row) for row in rows], "total": total}
 
     @app.get("/api/facets")
