@@ -805,7 +805,7 @@ class SimilarityManager:
                 output.update({int(row["photo_id"]): row for row in rows})
         return output
 
-    def annotate_and_sort(self, rows: list[dict[str, Any]], mode: str) -> list[dict[str, Any]]:
+    def annotate_and_sort(self, rows: list[dict[str, Any]], mode: str, *, keep_singletons: bool = False) -> list[dict[str, Any]]:
         if mode not in {"near", "content"}:
             raise ValueError("mode must be 'near' or 'content'")
         if not rows:
@@ -847,7 +847,7 @@ class SimilarityManager:
         grouped: dict[str, list[dict[str, Any]]] = {}
         singles: list[dict[str, Any]] = []
         for row, token in zip(copied, tokens, strict=True):
-            if token is not None and visible_counts[token] >= 2:
+            if token is not None and (keep_singletons or visible_counts[token] >= 2):
                 row["similarity_group"] = token
                 row["similarity_size"] = visible_counts[token]
                 grouped.setdefault(token, []).append(row)

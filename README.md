@@ -7,7 +7,7 @@ Galerie responsive en français pour photographes : planche-contact photo/vidéo
 - URL recommandée : https://arcturus.tail38ed6c.ts.net:9443 via Tailscale Serve (tailnet uniquement). La connexion et les miniatures ont été vérifiées via HTTPS dans Chromium mobile. Accès direct historique : http://100.90.227.52:8093.
 - Tailscale Serve 9443 relaie vers http://100.90.227.52:8093 ; les autres ports Serve restent inchangés. Uvicorn accepte les en-têtes proxy uniquement depuis 100.90.227.52 pour conserver schéma HTTPS, contrôle Origin et cookies Secure. Ne pas utiliser --no-proxy-headers derrière ce proxy.
 - Écoute limitée à l’adresse Tailscale, pas au LAN ni à Internet. HTTP est transporté dans le tunnel chiffré Tailscale.
-- Source en lecture seule : /mnt/usb/LUMEN/Salomé. Catalogue actuel : 3 929 médias, dont 3 891 photos et 38 vidéos ; 9 médias proviennent des imports. Les vidéos `.mov`, `.mp4`, `.m4v` et `.webm` sont indexées à partir des métadonnées ffprobe ; les aperçus sont extraits à la demande.
+- Source en lecture seule : /mnt/usb/LUMEN/Salomé. Catalogue validé lors de la migration : 3 929 médias, dont 3 891 photos et 38 vidéos ; 9 médias proviennent des imports. Les vidéos `.mov`, `.mp4`, `.m4v` et `.webm` sont indexées à partir des métadonnées ffprobe ; les aperçus sont extraits à la demande.
 - Accès sans mot de passe applicatif : PHOTO_AUTH_REQUIRED=false. Tailscale constitue la frontière d’accès ; ne pas exposer cette instance sur Internet ou sur toutes les interfaces. Les protections Origin des actions restent actives. L’authentification reste activée par défaut si ce paramètre est absent.
 - Configuration : /home/francois/.config/lumen-gallery/gallery.env.
 - Service utilisateur : lumen-gallery.service, activé au démarrage de la session utilisateur. Linger est déjà actif sur cet hôte.
@@ -22,7 +22,7 @@ Originaux : `/mnt/usb/LUMEN/Salomé`. Catalogue, imports, corbeille, modèles et
 
 Le montage Btrfs utilise l’UUID `b451a1d2-ed01-4017-93a2-d6fde8a4367f` via `/etc/fstab` avec automontage systemd. Les surcharges suivies dans `ops/lumen-gallery-usb.conf` et `ops/lumen-trash-usb.conf` sont liées dans les répertoires `.service.d/` des unités utilisateur : elles imposent le disque attendu, un marqueur de stockage, les originaux en lecture seule pour le serveur et les seules zones d’écriture nécessaires. Le serveur ne doit pas créer de bibliothèque vide en remplacement d’un disque absent.
 
-Les 3 920 originaux ont été comparés intégralement par SHA-256 avant bascule. Les IDs, notes et programmations de corbeille ont été conservés, avec relocation des chemins du catalogue, des imports et des résultats de similarité. Les anciennes copies sont conservées dans `/home/francois/Salomé.before-usb-20261121-163824` et `data.before-usb-20261121-163824` : l’espace interne correspondant n’a pas encore été libéré. Les rapports et sauvegardes privées sont sous `qa/results/usb-migration/` (ignoré par Git).
+Les 3 920 originaux ont été comparés intégralement par SHA-256 avant bascule. Les IDs, notes et programmations de corbeille ont été conservés, avec relocation des chemins du catalogue, des imports et des résultats de similarité. Ces copies de sécurité sont des instantanés de la migration et ne suivent pas les ajouts ultérieurs. Les anciennes copies sont conservées dans `/home/francois/Salomé.before-usb-20261121-163824` et `data.before-usb-20261121-163824` : l’espace interne correspondant n’a pas encore été libéré. Les rapports et sauvegardes privées sont sous `qa/results/usb-migration/` (ignoré par Git).
 
 ## Features
 
@@ -41,7 +41,7 @@ Deux vues indépendantes, sans déplacement ni suppression des originaux :
 - **Photos proches** : empreinte perceptuelle, couleur et proportions pour rapprocher doublons et variantes visuelles d’une prise de vue.
 - **Contenu similaire** : représentations CLIP calculées localement pour rapprocher les scènes et sujets visuellement apparentés. Ce n’est ni une reconnaissance d’identité ni une garantie que les photos montrent la même personne.
 
-Le menu « Regrouper » active une vue ; « Analyser » calcule les deux modes en arrière-plan avec progression et annulation. Les vidéos restent dans « Autres médias ». Les filtres existants continuent à s’appliquer ; la pagination ne supprime aucun média. Les groupes sont des suggestions, jamais des décisions de suppression. Les membres doivent ressembler directement au représentant du groupe, sans chaînage transitif illimité.
+Le menu « Regrouper » présente les groupes sous forme de piles de photos, avec une couverture et leur nombre d’images. Un clic ouvre la grille complète du groupe ; « Retour aux piles » restaure la position et les cartes déjà chargées. Les photos non regroupées et les vidéos restent des cartes individuelles. Les filtres sont appliqués avant le calcul des piles et leur pagination. « Analyser » calcule les deux modes en arrière-plan avec progression et annulation. Les vidéos restent dans « Autres médias ». Les filtres existants continuent à s’appliquer ; la pagination ne supprime aucun média. Les groupes sont des suggestions, jamais des décisions de suppression. Les membres doivent ressembler directement au représentant du groupe, sans chaînage transitif illimité.
 
 Les empreintes, vecteurs et groupes sont conservés séparément dans `data/similarity.sqlite3`. L’analyse suivante réutilise les entrées inchangées ; après un import ou une modification des sources, relancer l’analyse. Les notes et programmations de corbeille restent dans le catalogue existant. Les JPEG embarqués des RAW, déjà orientés par le cache média, servent à l’analyse ; pas de dématriçage ni d’envoi des images vers un service externe.
 
@@ -55,7 +55,7 @@ curl -fL --retry 2 \
 sha256sum data/models/clip-vit-base-patch32/vision_model_quantized.onnx
 ```
 
-API : `POST /api/similarity/analyze`, `GET /api/similarity/status`, `POST /api/similarity/cancel`, et `GET /api/photos?similarity=near` ou `similarity=content`. Les mutations conservent les contrôles de session et d’Origin. Tests : `tests/test_embeddings.py`, `tests/test_similarity.py`, `tests/test_similarity_api.py` et `static/tests/similarity_regression.py`. Ce dernier vérifie la vraie instance et ne doit pas être lancé en prétendant qu’une analyse simulée valide les regroupements réels.
+API : `POST /api/similarity/analyze`, `GET /api/similarity/status`, `POST /api/similarity/cancel`, et `GET /api/photos?similarity=near` ou `similarity=content`. Ajouter `similarity_view=stacks` pour les résumés paginés en unités de cartes (`media_total` conserve le total des médias filtrés), ou `similarity_group=near:ID` / `content:ID` pour les membres d’un groupe, filtrés avant pagination. Les deux paramètres sont exclusifs et nécessitent un mode correspondant. Les mutations conservent les contrôles de session et d’Origin. Tests : `tests/test_embeddings.py`, `tests/test_similarity.py`, `tests/test_similarity_api.py` et `static/tests/similarity_regression.py`. Ce dernier vérifie la vraie instance et ne doit pas être lancé en prétendant qu’une analyse simulée valide les regroupements réels.
 
 ## Requirements and setup
 

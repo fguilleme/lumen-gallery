@@ -247,6 +247,12 @@
     const similarity = normaliseSimilarity(filters.similarity);
     if (similarity) {
       pairs.push(`similarity=${encodeURIComponent(similarity)}`);
+      const group = typeof filters.similarityGroup === 'string' ? filters.similarityGroup : '';
+      if (new RegExp(`^${similarity}:[1-9][0-9]*$`).test(group)) {
+        pairs.push(`similarity_group=${encodeURIComponent(group)}`);
+      } else if (filters.similarityView === 'stacks') {
+        pairs.push('similarity_view=stacks');
+      }
     }
 
     const sort = SORTS.has(filters.sort) ? filters.sort : 'date_desc';
@@ -780,6 +786,10 @@
     authenticated: false,
     sessionLabel: 'connecté',
     items: [],
+    entries: [],
+    mediaTotal: null,
+    activeGroup: null,
+    stackReturn: null,
     mediaContract: null,
     total: null,
     offset: 0,
@@ -894,6 +904,9 @@
     isoMax: document.getElementById('iso-max'),
     resultsMeta: document.getElementById('results-meta'),
     resultCount: document.getElementById('result-count'),
+    groupNavigation: document.getElementById('group-navigation'),
+    groupBack: document.getElementById('group-back'),
+    groupTitle: document.getElementById('group-title'),
     gallery: document.getElementById('gallery-grid'),
     galleryLoading: document.getElementById('gallery-loading'),
     galleryEmpty: document.getElementById('gallery-empty'),
@@ -1035,6 +1048,7 @@
   }
 
   function showLogin(message = '') {
+    clearGroupContext();
     cancelPendingRequests();
     state.authenticated = false;
     state.sessionLabel = 'connecté';
@@ -1089,8 +1103,10 @@
       rating: dom.ratingFilter.value,
       deletionStatus: dom.deletionStatusFilter.value,
       similarity: dom.similaritySelect?.value || '',
+      similarityView: state.activeGroup ? '' : 'stacks',
+      similarityGroup: state.activeGroup,
       offset: state.offset,
-      limit: PAGE_SIZE,
+      limit: state.activeGroup ? 200 : PAGE_SIZE,
     };
   }
 
@@ -1123,6 +1139,7 @@
   }
 
   function selectImportedOnly() {
+    clearGroupContext();
     clearFiltersForImportedOnly();
     dom.importedOnlyFilter.checked = true;
     updateFilterCount();
@@ -1226,11 +1243,14 @@
   }
 
   function updateResultsMeta() {
-    const loadedCount = state.items.length;
+    dom.gallery.closest('.gallery-section')?.classList.toggle('gallery-section--stacks', isStackOverview());
+    const loadedCount = state.entries.length;
     if (state.total === null) {
       dom.resultCount.textContent = loadedCount ? formatCount(loadedCount, 'média', 'médias') : '—';
     } else {
-      dom.resultCount.textContent = `${loadedCount} sur ${state.total} ${state.total === 1 ? 'média' : 'médias'}`;
+      dom.resultCount.textContent = isStackOverview()
+        ? `${loadedCount} sur ${state.total} éléments · ${state.mediaTotal ?? '—'} médias`
+        : `${loadedCount} sur ${state.total} ${state.total === 1 ? 'média' : 'médias'}`;
     }
     dom.resultsMeta.classList.toggle('has-results', loadedCount > 0);
     const canLoadMore = state.total !== null
@@ -1630,22 +1650,111 @@
     return heading;
   }
 
+  function isStackOverview() {
+    return Boolean(normaliseSimilarity(dom.similaritySelect?.value) && !state.activeGroup);
+  }
+
+  function clearGroupContext() {
+    state.activeGroup = null;
+    state.stackReturn = null;
+    if (dom.groupNavigation) dom.groupNavigation.hidden = true;
+  }
+
+  async function openStack(entry, trigger) {
+    if (state.activeGroup || !entry.similarity_group) return;
+    const fragment = document.createDocumentFragment();
+    const snapshot = {
+      fragment, trigger, entries: state.entries, items: state.items,
+      total: state.total, mediaTotal: state.mediaTotal, offset: state.offset,
+      hasMore: state.hasMore, scrollX: window.scrollX, scrollY: window.scrollY,
+    };
+    while (dom.gallery.firstChild) fragment.append(dom.gallery.firstChild);
+    state.stackReturn = snapshot;
+    state.activeGroup = entry.similarity_group;
+    dom.groupTitle.textContent = similarityGroupTitle(entry, dom.similaritySelect.value);
+    dom.groupNavigation.hidden = false;
+    await loadPhotos({ reset: true });
+    if (state.activeGroup === entry.similarity_group) {
+      const top = dom.gallery.getBoundingClientRect().top + window.scrollY - dom.groupNavigation.offsetHeight - 12;
+      window.scrollTo(0, Math.max(0, top));
+      dom.groupTitle.focus({ preventScroll: true });
+    }
+  }
+
+  function backToStacks() {
+    const snapshot = state.stackReturn;
+    state.photosRequest?.abort();
+    state.photosRequest = null;
+    state.photosSequence += 1;
+    clearGroupContext();
+    if (!snapshot) {
+      void loadPhotos({ reset: true });
+      return;
+    }
+    Object.assign(state, {
+      entries: snapshot.entries, items: snapshot.items, total: snapshot.total,
+      mediaTotal: snapshot.mediaTotal, offset: snapshot.offset, hasMore: snapshot.hasMore,
+    });
+    dom.gallery.replaceChildren(snapshot.fragment);
+    dom.gallery.classList.remove('gallery-grid--grouped');
+    updateResultsMeta();
+    showGalleryState(state.entries.length ? 'grid' : 'empty');
+    scheduleGalleryLayout();
+    const restore = () => {
+      window.scrollTo(snapshot.scrollX, snapshot.scrollY);
+      snapshot.trigger?.focus({ preventScroll: true });
+    };
+    restore();
+    window.requestAnimationFrame(restore);
+  }
+
+  function makeStackCard(entry) {
+    const card = textElement('article', 'photo-card stack-card');
+    card.dataset.similarityGroup = entry.similarity_group;
+    card.dataset.stackSize = String(entry.similarity_size);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'photo-card__open stack-card__open';
+    button.setAttribute('aria-label', `Ouvrir le groupe de ${entry.similarity_size} images`);
+    button.addEventListener('click', () => { void openStack(entry, button); });
+    const frame = textElement('span', 'photo-card__frame stack-card__frame');
+    frame.style.aspectRatio = String(getPhotoAspectRatio(entry));
+    const covers = Array.isArray(entry.stack_covers) && entry.stack_covers.length ? entry.stack_covers : [entry];
+    covers.slice(0, 3).reverse().forEach((cover, index, selected) => {
+      const layer = textElement('span', 'stack-card__layer');
+      const depth = selected.length - index - 1;
+      layer.dataset.depth = String(depth);
+      layer.style.setProperty('--stack-depth', depth);
+      const image = document.createElement('img');
+      image.className = 'photo-card__image';
+      image.alt = depth === 0 ? (cover.name || 'Photo de couverture du groupe') : '';
+      image.loading = 'lazy';
+      image.decoding = 'async';
+      image.addEventListener('load', scheduleGalleryLayout, { once: true });
+      image.addEventListener('error', () => { layer.classList.add('is-missing'); }, { once: true });
+      image.src = normaliseAssetUrl(cover.thumb_url || cover.preview_url);
+      layer.append(image);
+      frame.append(layer);
+    });
+    frame.append(textElement('span', 'stack-card__count', `${entry.similarity_size} images`));
+    button.append(frame);
+    const footer = textElement('div', 'photo-card__footer');
+    footer.append(textElement('h3', 'photo-card__name', 'Ouvrir le groupe'));
+    footer.append(textElement('span', 'stack-card__label', SIMILARITY_LABELS[normaliseSimilarity(dom.similaritySelect?.value)] || 'Médias similaires'));
+    card.append(button, footer);
+    return card;
+  }
+
   function renderGallery({ reset = true } = {}) {
     const existingCount = reset ? 0 : dom.gallery.querySelectorAll('.photo-card').length;
-    const similarityMode = normaliseSimilarity(dom.similaritySelect?.value);
-    if (reset) {
-      dom.gallery.replaceChildren();
-    }
-    dom.gallery.classList.toggle('gallery-grid--grouped', Boolean(similarityMode));
-    state.items.slice(existingCount).forEach((photo, index) => {
-      const itemIndex = index + existingCount;
-      if (similarityMode && similarityGroupBoundary(state.items[itemIndex - 1], photo, similarityMode)) {
-        dom.gallery.append(makeSimilarityGroupHeading(photo, similarityMode));
-      }
-      dom.gallery.append(makePhotoCard(photo, itemIndex));
+    if (reset) dom.gallery.replaceChildren();
+    dom.gallery.classList.toggle('gallery-grid--grouped', Boolean(state.activeGroup));
+    state.entries.slice(existingCount).forEach((entry) => {
+      const index = state.items.findIndex(photo => String(photo.id) === String(entry.id));
+      dom.gallery.append(entry.is_stack ? makeStackCard(entry) : makePhotoCard(entry, index));
     });
     updateResultsMeta();
-    if (state.items.length === 0) {
+    if (state.entries.length === 0) {
       showGalleryState('empty');
     } else {
       showGalleryState('grid');
@@ -1673,6 +1782,7 @@
       state.offset = 0;
       if (!preserveViewport) {
         state.items = [];
+        state.entries = [];
         state.total = null;
         showGalleryState('loading');
         updateResultsMeta();
@@ -1680,15 +1790,27 @@
     }
 
     try {
-      const query = buildPhotoQuery(currentFilters());
+      const filters = currentFilters();
+      const query = buildPhotoQuery(filters);
       const payload = await fetchJson(`/api/photos?${query}`, { signal: controller.signal });
       if (sequence !== state.photosSequence || controller.signal.aborted) {
         return;
       }
-      const incoming = Array.isArray(payload?.items)
+      let incoming = Array.isArray(payload?.items)
         ? payload.items.map(withNormalisedRating)
         : [];
       const reportedTotal = finiteNumber(payload?.total);
+      if (state.activeGroup && reportedTotal !== null) {
+        while (incoming.length < reportedTotal) {
+          const moreQuery = buildPhotoQuery({ ...filters, offset: incoming.length, limit: 200 });
+          const more = await fetchJson(`/api/photos?${moreQuery}`, { signal: controller.signal });
+          if (sequence !== state.photosSequence || controller.signal.aborted) return;
+          if (!Array.isArray(more?.items) || more.items.length === 0) {
+            throw new Error('Le groupe a changé pendant son ouverture. Réessayez.');
+          }
+          incoming.push(...more.items.map(withNormalisedRating));
+        }
+      }
       const requestedMediaType = currentFilters().mediaType;
       const mediaContractAvailable = hasMediaTypeContract(incoming);
       const requestedTypeMatches = matchesMediaTypeFilter(incoming, requestedMediaType);
@@ -1697,6 +1819,7 @@
       }
       if (requestedMediaType && incoming.length > 0 && !requestedTypeMatches) {
         state.items = [];
+        state.entries = [];
         state.total = null;
         state.offset = 0;
         state.hasMore = false;
@@ -1704,10 +1827,14 @@
         renderGalleryError(`Le filtre ${label} nécessite la version média du serveur.`);
         return;
       }
-      state.items = reset ? incoming : state.items.concat(incoming);
+      const currentMedia = new Map(state.items.map(item => [String(item.id), item]));
+      const previous = state.entries.map(entry => entry.is_stack ? entry : currentMedia.get(String(entry.id)) || entry);
+      state.entries = reset ? incoming : previous.concat(incoming);
+      state.items = state.entries.filter(item => !item.is_stack);
       state.total = reportedTotal === null ? null : reportedTotal;
-      state.offset = state.items.length;
-      state.hasMore = incoming.length >= PAGE_SIZE;
+      state.mediaTotal = finiteNumber(payload?.media_total);
+      state.offset = state.entries.length;
+      state.hasMore = !state.activeGroup && incoming.length >= PAGE_SIZE;
       renderGallery({ reset });
       if (preservedScroll) {
         window.scrollTo(preservedScroll.left, preservedScroll.top);
@@ -1719,6 +1846,7 @@
       }
       if (reset && !preserveViewport) {
         state.items = [];
+        state.entries = [];
         state.total = null;
       } else if (preserveViewport) {
         setMessage(dom.scanStatus, displayErrorMessage(error, 'Les résultats n’ont pas pu être actualisés.'), 'error');
@@ -3484,6 +3612,7 @@
   }
 
   function onFilterChanged(event) {
+    clearGroupContext();
     if (event?.target === dom.importedOnlyFilter && dom.importedOnlyFilter.checked) {
       clearFiltersForImportedOnly();
     }
@@ -3526,6 +3655,7 @@
     dom.importedOnlyFilter.addEventListener('change', onFilterChanged);
     dom.filtersForm.addEventListener('change', onFilterChanged);
     dom.similaritySelect?.addEventListener('change', onFilterChanged);
+    dom.groupBack?.addEventListener('click', backToStacks);
     dom.similarityAnalyze?.addEventListener('click', () => {
       void startSimilarityAnalysis();
     });

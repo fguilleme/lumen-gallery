@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import re
 import os
 import secrets
 import time
@@ -382,6 +383,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         imported_only: bool = Query(False),
         directory: str | None = Query(None),
         similarity: Literal["near", "content"] | None = Query(None),
+        similarity_view: Literal["stacks"] | None = Query(None),
+        similarity_group: str | None = Query(None, max_length=100),
         date_from: str | None = None,
         date_to: str | None = None,
         iso_min: float | None = None,
@@ -396,6 +399,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         if sort not in SORT_SQL:
             raise HTTPException(status_code=422, detail="Invalid sort")
+        if (similarity_view or similarity_group) and not similarity:
+            raise HTTPException(status_code=422, detail="Similarity mode required")
+        if similarity_group and (similarity_view or not re.fullmatch(rf"{similarity}:[1-9][0-9]*", similarity_group)):
+            raise HTTPException(status_code=422, detail="Invalid similarity group")
         rows, total = database.list_photos(
             q=q,
             camera=camera,
@@ -416,7 +423,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             limit=1000000000 if similarity else limit,
         )
         if similarity:
-            rows = similarity_manager.annotate_and_sort(rows, similarity)[offset:offset + limit]
+            if similarity_group:
+                rows = similarity_manager.annotate_and_sort(rows, similarity, keep_singletons=True)
+                rows = [row for row in rows if row.get("similarity_group") == similarity_group]
+                total = len(rows)
+            else:
+                rows = similarity_manager.annotate_and_sort(rows, similarity)
+            if similarity_view == "stacks":
+                entries: list[dict[str, Any]] = []
+                groups: dict[str, dict[str, Any]] = {}
+                for row in rows:
+                    token = row.get("similarity_group")
+                    if not token:
+                        entries.append(row)
+                    elif token not in groups:
+                        entry = dict(row, is_stack=True, stack_covers=[row])
+                        groups[token] = entry
+                        entries.append(entry)
+                    elif len(groups[token]["stack_covers"]) < 3:
+                        groups[token]["stack_covers"].append(row)
+                items = []
+                for entry in entries[offset:offset + limit]:
+                    item = _item(entry)
+                    if entry.get("is_stack"):
+                        item.update(is_stack=True, stack_covers=[_item(cover) for cover in entry["stack_covers"]])
+                    items.append(item)
+                return {"items": items, "total": len(entries), "media_total": total}
+            rows = rows[offset:offset + limit]
         return {"items": [_item(row) for row in rows], "total": total}
 
     @app.get("/api/facets")

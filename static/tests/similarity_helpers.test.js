@@ -86,5 +86,5 @@ test('staged controls expose both grouping modes without restoring filename sort
   assert.match(stagedIndex, /<option value="near">Photos proches<\/option>/);
   assert.match(stagedIndex, /<option value="content">Contenu similaire<\/option>/);
   assert.doesNotMatch(stagedIndex, /<option\s+value="name_asc"/);
-  assert.match(stagedIndex, /similarity\d+/);
+  assert.match(stagedIndex, /\/static\/app\.js\?v=[^"\s]+/);
 });
